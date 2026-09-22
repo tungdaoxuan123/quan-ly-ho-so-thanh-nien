@@ -9,4 +9,4 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
-"$PYTHON_BIN" "$TASK_DIR/tsq_a3_app.py"
+"$PYTHON_BIN" "$TASK_DIR/quan_ly_ho_so.py"

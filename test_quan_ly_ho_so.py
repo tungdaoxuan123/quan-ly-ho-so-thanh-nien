@@ -5,11 +5,11 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-import tsq_a3_app as app
-from generate_tsq_a3 import generate_document
+import quan_ly_ho_so as app
+from tao_ho_so_word import generate_document
 
 
-TEMPLATE = Path(__file__).resolve().parent / "TSQ_A3_Full_Template.docx"
+TEMPLATE = Path(__file__).resolve().parent / "Mau_Ho_So_Thanh_Nien.docx"
 
 
 def create_test_workbook(path):
@@ -66,7 +66,7 @@ def create_test_workbook(path):
     return len(headers)
 
 
-class TsqA3AppTests(unittest.TestCase):
+class QuanLyHoSoTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workbook_path = Path(self.temp_dir.name) / "records.xlsx"

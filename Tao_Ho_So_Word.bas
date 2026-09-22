@@ -1,11 +1,11 @@
-Attribute VB_Name = "GenerateTSQA3"
+Attribute VB_Name = "TaoHoSoWord"
 Option Explicit
 
 Private Function QuoteForShell(ByVal value As String) As String
     QuoteForShell = Chr$(34) & Replace(value, Chr$(34), "\" & Chr$(34)) & Chr$(34)
 End Function
 
-Public Sub GenerateTSQA3ForSelectedPerson()
+Public Sub GenerateProfileForSelectedPerson()
     Dim selectedRow As Long
     Dim baseFolder As String
     Dim command As String
@@ -25,11 +25,11 @@ Public Sub GenerateTSQA3ForSelectedPerson()
         Exit Sub
     End If
 
-    scriptPath = baseFolder & "/generate_tsq_a3.py"
-    templatePath = baseFolder & "/TSQ_A3_Section_I_Template.docx"
+    scriptPath = baseFolder & "/tao_ho_so_word.py"
+    templatePath = baseFolder & "/Mau_Ho_So_Thanh_Nien_Phan_I.docx"
     pythonPath = baseFolder & "/.venv/bin/python3"
     If Dir(scriptPath) = "" Or Dir(templatePath) = "" Then
-        MsgBox "Put generate_tsq_a3.py and TSQ_A3_Section_I_Template.docx in the same folder as this workbook.", vbCritical
+        MsgBox "Put tao_ho_so_word.py and Mau_Ho_So_Thanh_Nien_Phan_I.docx in the same folder as this workbook.", vbCritical
         Exit Sub
     End If
     If Dir(pythonPath) = "" Then
@@ -41,9 +41,9 @@ Public Sub GenerateTSQA3ForSelectedPerson()
         " --workbook " & QuoteForShell(ThisWorkbook.FullName) & _
         " --row " & CStr(selectedRow) & _
         " --template " & QuoteForShell(templatePath) & _
-        " --output-dir " & QuoteForShell(baseFolder & "/Generated TSQ A3") & _
-        " > " & QuoteForShell(baseFolder & "/Generated TSQ A3.log") & " 2>&1"
+        " --output-dir " & QuoteForShell(baseFolder & "/Ho so thanh nien da tao") & _
+        " > " & QuoteForShell(baseFolder & "/Tao ho so Word.log") & " 2>&1"
 
     Shell command, vbNormalFocus
-    MsgBox "Generating Word document. It will be saved in the Generated TSQ A3 folder.", vbInformation
+    MsgBox "Generating Word document. It will be saved in the Ho so thanh nien da tao folder.", vbInformation
 End Sub

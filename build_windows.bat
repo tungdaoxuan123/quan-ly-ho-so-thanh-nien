@@ -13,8 +13,8 @@ if errorlevel 1 exit /b 1
 ".venv\Scripts\python.exe" -m pip install pyinstaller
 if errorlevel 1 exit /b 1
 
-".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --name TSQ_A3 --add-data "TSQ_A3_Full_Template.docx;." tsq_a3_app.py
+".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onedir --windowed --name QuanLyHoSoThanhNien --add-data "Mau_Ho_So_Thanh_Nien.docx;." quan_ly_ho_so.py
 if errorlevel 1 exit /b 1
 
-echo Built dist\TSQ_A3\TSQ_A3.exe
+echo Built dist\QuanLyHoSoThanhNien\QuanLyHoSoThanhNien.exe
 endlocal

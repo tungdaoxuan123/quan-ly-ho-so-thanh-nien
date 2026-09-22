@@ -6,7 +6,9 @@ __pycache__/
 
 # Local application data
 uploads/
-Generated TSQ A3/
+Generated */
+Hồ sơ thanh niên đã tạo/
+Ho so thanh nien da tao/
 generated-sample/
 *.sqlite
 *.sqlite3

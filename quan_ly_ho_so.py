@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local browser UI for Excel-backed TSQ A3 records."""
+"""Local browser UI for Excel-backed youth records."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from flask import Flask, flash, jsonify, redirect, render_template_string, reque
 from openpyxl import load_workbook
 from werkzeug.utils import secure_filename
 
-from generate_tsq_a3 import generate_document, text
+from tao_ho_so_word import generate_document, text
 
 
 def resource_dir():
@@ -35,8 +35,8 @@ def resource_dir():
 
 BASE_DIR = resource_dir()
 UPLOAD_DIR = BASE_DIR / "uploads"
-TEMPLATE = BASE_DIR / "TSQ_A3_Full_Template.docx"
-DEFAULT_OUTPUT_NAME = "Generated TSQ A3"
+TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
+DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 FILTER_DB_COLUMNS = {
@@ -94,7 +94,7 @@ FORM_GROUPS = [
 ]
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("TSQ_A3_SECRET") or secrets.token_hex(32)
+app.secret_key = os.environ.get("QUAN_LY_HO_SO_SECRET") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -131,7 +131,7 @@ def settings_path():
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "TSQ_A3_Generator" / "settings.json"
+    return root / "Quan_Ly_Ho_So_Thanh_Nien" / "settings.json"
 
 
 def default_database_path():
@@ -742,7 +742,7 @@ PAGE = r"""
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Quản lý TSQ A3</title>
+  <title>Quản lý hồ sơ thanh niên</title>
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
     body { max-width: 1240px; margin: 0 auto; padding: 28px; } h1 { margin: 0; color: #163d68; } h2 { color: #163d68; margin: 0 0 10px; font-size: 19px; }
@@ -761,7 +761,7 @@ PAGE = r"""
   </style>
 </head>
 <body>
-  <header class="app-header"><div><h1>Quản lý hồ sơ TSQ A3</h1><p class="muted">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</p></div></header>
+  <header class="app-header"><div><h1>Quản lý hồ sơ thanh niên</h1><p class="muted">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</p></div></header>
   {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ 'error' if category == 'error' else '' }}">{{ message }}</p>{% endfor %}{% endwith %}
   {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
   {% if not loaded %}
@@ -786,7 +786,7 @@ PAGE = r"""
 
 FORM_PAGE = r"""
 <!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ title }} · TSQ A3</title>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ title }} · Quản lý hồ sơ thanh niên</title>
 <style>
   :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; } body { max-width: 1080px; margin: 0 auto; padding: 28px; } h1 { color: #163d68; margin-bottom: 4px; }
   form { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 20px; } .section-card { border: 1px solid #dbe3ee; border-radius: 9px; margin: 14px 0; overflow: hidden; } summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; color: #163d68; font-weight: 700; background: #f7f9fc; } .section-card[open] summary { border-bottom: 1px solid #dbe3ee; background: #eef4fa; } .field-count { color: #637089; font-size: 14px; font-weight: 500; } .section-body { padding: 16px; }
@@ -1058,7 +1058,7 @@ def request_too_large(error):
 
 if __name__ == "__main__":
     if not TEMPLATE.is_file():
-        raise SystemExit("TSQ_A3_Full_Template.docx phải nằm cùng thư mục với ứng dụng.")
+        raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
     load_saved_workbook()
     threading.Timer(0.7, lambda: webbrowser.open("http://127.0.0.1:8765")).start()
     app.run(host="127.0.0.1", port=8765, debug=False)

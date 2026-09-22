@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate one TSQ A3 Section I Word document from a selected Excel row."""
+"""Generate one youth profile Word document from a selected Excel row."""
 
 import argparse
 import re

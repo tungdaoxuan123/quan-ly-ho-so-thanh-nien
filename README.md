@@ -1,6 +1,6 @@
-# Ứng dụng TSQ A3
+# Quản lý hồ sơ thanh niên
 
-Ứng dụng chạy cục bộ để quản lý hồ sơ TSQ A3 từ tệp Excel. Excel là nguồn dữ liệu chính. Ứng dụng đồng bộ dữ liệu sang SQLite để tìm kiếm, lọc và phân trang mà không cần giữ toàn bộ hồ sơ trong RAM. Ứng dụng vẫn hỗ trợ thêm/sửa hồ sơ và tạo tệp Word cho từng người.
+Ứng dụng chạy cục bộ để quản lý hồ sơ thanh niên từ tệp Excel. Excel là nguồn dữ liệu chính. Ứng dụng đồng bộ dữ liệu sang SQLite để tìm kiếm, lọc và phân trang mà không cần giữ toàn bộ hồ sơ trong RAM. Ứng dụng hỗ trợ thêm/sửa hồ sơ và tạo tệp Word cho từng người.
 
 ## Chạy trên Mac
 
@@ -12,10 +12,10 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Sau đó, nhấp đúp [Run TSQ A3 App.command](Run%20TSQ%20A3%20App.command), hoặc chạy:
+Sau đó, nhấp đúp [Chạy Quản Lý Hồ Sơ.command](Chay%20Quan%20Ly%20Ho%20So.command), hoặc chạy:
 
 ```bash
-.venv/bin/python tsq_a3_app.py
+.venv/bin/python quan_ly_ho_so.py
 ```
 
 Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
@@ -23,11 +23,11 @@ Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
 ## Chạy trên Windows
 
 1. Trên máy Windows dùng để tạo gói, nhấp đúp `build_windows.bat`.
-2. Sao chép toàn bộ thư mục dự án, gồm cả `dist\TSQ_A3`, cho người dùng.
-3. Nhấp đúp `Run TSQ A3 App.bat`.
+2. Sao chép toàn bộ thư mục dự án, gồm cả `dist\QuanLyHoSoThanhNien`, cho người dùng.
+3. Nhấp đúp `Chay Quan Ly Ho So.bat`.
 4. Chọn tệp Excel gốc trong ứng dụng.
 
-Tệp thực thi Windows phải được tạo trên Windows. Thư mục `dist\TSQ_A3` chứa ứng dụng và các thư viện cần thiết.
+Tệp thực thi Windows phải được tạo trên Windows. Thư mục `dist\QuanLyHoSoThanhNien` chứa ứng dụng và các thư viện cần thiết.
 
 ## Cách sử dụng hằng ngày
 
@@ -35,11 +35,11 @@ Tệp thực thi Windows phải được tạo trên Windows. Thư mục `dist\T
 2. Dùng ô tìm kiếm để tra cứu theo họ tên, STT, CCCD hoặc nội dung hồ sơ. Mở `Bộ lọc nâng cao` khi cần lọc theo năm sinh, nghề nghiệp, học vấn, dân tộc, tôn giáo hoặc địa chỉ.
 3. Chọn `Sửa` để cập nhật hồ sơ, hoặc `Thêm hồ sơ` để tạo người mới. Hồ sơ mới được cấp STT kế tiếp.
 4. Lưu và đóng Excel trước khi bấm `Lưu vào Excel` trong ứng dụng. Hệ thống tạo một tệp sao lưu có tên `.backup-YYYYMMDD-HHMMSS.xlsx` cạnh tệp gốc trước khi thay thế tệp.
-5. Chọn `Tạo Word`. Tệp được tải về trình duyệt và lưu tại thư mục `Generated TSQ A3` cạnh tệp Excel, với tên `STT - Họ tên.docx`.
+5. Chọn `Tạo Word`. Tệp được tải về trình duyệt và lưu tại thư mục `Hồ sơ thanh niên đã tạo` cạnh tệp Excel, với tên `STT - Họ tên.docx`.
 
 Nếu một người khác đã lưu thay đổi trong Excel, bấm `Làm mới`. Ứng dụng cũng tự phát hiện tệp đã thay đổi và đồng bộ lại SQLite. Khi tệp thay đổi trong lúc đang sửa hồ sơ, ứng dụng sẽ yêu cầu mở lại hồ sơ để tránh ghi đè dữ liệu mới.
 
-SQLite chỉ là cache phục vụ ứng dụng. Trên Mac, cache nằm trong `~/Library/Application Support/TSQ_A3_Generator/cache.sqlite3`. Trên Windows, cache nằm trong `%LOCALAPPDATA%\TSQ_A3_Generator\cache.sqlite3`. Có thể xóa tệp cache khi ứng dụng đã tắt; ứng dụng sẽ tạo lại từ Excel vào lần chạy tiếp theo.
+SQLite chỉ là cache phục vụ ứng dụng. Trên Mac, cache nằm trong `~/Library/Application Support/Quan_Ly_Ho_So_Thanh_Nien/cache.sqlite3`. Trên Windows, cache nằm trong `%LOCALAPPDATA%\Quan_Ly_Ho_So_Thanh_Nien\cache.sqlite3`. Có thể xóa tệp cache khi ứng dụng đã tắt; ứng dụng sẽ tạo lại từ Excel vào lần chạy tiếp theo.
 
 ## Lưu ý về tệp Excel
 

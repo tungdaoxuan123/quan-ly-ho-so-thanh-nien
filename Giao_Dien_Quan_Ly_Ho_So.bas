@@ -1,9 +1,9 @@
-Attribute VB_Name = "TSQA3UserInterface"
+Attribute VB_Name = "GiaoDienQuanLyHoSo"
 Option Explicit
 
-Private Const UiSheetName As String = "Generate TSQ A3"
+Private Const UiSheetName As String = "Quan ly ho so"
 
-Public Sub CreateTSQA3GeneratorUI()
+Public Sub CreateProfileManagementUI()
     Dim sourceSheet As Worksheet
     Dim uiSheet As Worksheet
     Dim lastRow As Long
@@ -13,7 +13,7 @@ Public Sub CreateTSQA3GeneratorUI()
 
     Set sourceSheet = ActiveSheet
     If sourceSheet.Name = UiSheetName Then
-        MsgBox "Open your data sheet first, then run CreateTSQA3GeneratorUI again.", vbExclamation
+        MsgBox "Open your data sheet first, then run CreateProfileManagementUI again.", vbExclamation
         Exit Sub
     End If
 
@@ -34,15 +34,15 @@ Public Sub CreateTSQA3GeneratorUI()
     uiSheet.Name = UiSheetName
 
     On Error Resume Next
-    ThisWorkbook.Names("TSQRecordNumbers").Delete
+    ThisWorkbook.Names("ProfileRecordNumbers").Delete
     On Error GoTo 0
-    ThisWorkbook.Names.Add Name:="TSQRecordNumbers", RefersTo:="='" & Replace(sourceName, "'", "''") & "'!$B$3:$B$" & CStr(lastRow)
+    ThisWorkbook.Names.Add Name:="ProfileRecordNumbers", RefersTo:="='" & Replace(sourceName, "'", "''") & "'!$B$3:$B$" & CStr(lastRow)
 
     With uiSheet
         .Columns("A").ColumnWidth = 24
         .Columns("B").ColumnWidth = 52
         .Range("A1:B1").Merge
-        .Range("A1").Value = "Generate TSQ A3 Word Document"
+        .Range("A1").Value = "Quan ly ho so thanh nien"
         .Range("A1").Font.Bold = True
         .Range("A1").Font.Size = 18
         .Range("A1").HorizontalAlignment = xlCenter
@@ -53,7 +53,7 @@ Public Sub CreateTSQA3GeneratorUI()
         .Range("B2").Value = sourceName
         .Range("A4").Value = "Choose person (STT)"
         .Range("B4").Validation.Delete
-        .Range("B4").Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Formula1:="=TSQRecordNumbers"
+        .Range("B4").Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, Formula1:="=ProfileRecordNumbers"
         .Range("B4").Value = sourceSheet.Cells(3, 2).Value
         .Range("A6").Value = "Name"
         .Range("A7").Value = "Date of birth"
@@ -86,13 +86,13 @@ Public Sub CreateTSQA3GeneratorUI()
     generateButton.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
     generateButton.Fill.ForeColor.RGB = RGB(31, 78, 121)
     generateButton.Line.ForeColor.RGB = RGB(31, 78, 121)
-    generateButton.OnAction = "GenerateTSQA3FromUI"
+    generateButton.OnAction = "GenerateProfileFromUI"
 
     uiSheet.Activate
-    MsgBox "The Generate TSQ A3 screen is ready. Choose a person, then click Generate Word Document.", vbInformation
+    MsgBox "The profile management screen is ready. Choose a person, then click Generate Word Document.", vbInformation
 End Sub
 
-Public Sub GenerateTSQA3FromUI()
+Public Sub GenerateProfileFromUI()
     Dim uiSheet As Worksheet
     Dim sourceSheet As Worksheet
     Dim recordNumber As Variant
@@ -106,10 +106,10 @@ Public Sub GenerateTSQA3FromUI()
         MsgBox "Choose a valid STT number from the dropdown.", vbExclamation
         Exit Sub
     End If
-    GenerateTSQA3ForRow foundCell.Row, sourceSheet.Name
+    GenerateProfileForRow foundCell.Row, sourceSheet.Name
 End Sub
 
-Private Sub GenerateTSQA3ForRow(ByVal sourceRow As Long, ByVal sourceSheetName As String)
+Private Sub GenerateProfileForRow(ByVal sourceRow As Long, ByVal sourceSheetName As String)
     Dim baseFolder As String
     Dim scriptPath As String
     Dim templatePath As String
@@ -117,11 +117,11 @@ Private Sub GenerateTSQA3ForRow(ByVal sourceRow As Long, ByVal sourceSheetName A
     Dim command As String
 
     baseFolder = ThisWorkbook.Path
-    scriptPath = baseFolder & "/generate_tsq_a3.py"
-    templatePath = baseFolder & "/TSQ_A3_Section_I_Template.docx"
+    scriptPath = baseFolder & "/tao_ho_so_word.py"
+    templatePath = baseFolder & "/Mau_Ho_So_Thanh_Nien_Phan_I.docx"
     pythonPath = baseFolder & "/.venv/bin/python3"
     If Len(baseFolder) = 0 Or Dir(scriptPath) = "" Or Dir(templatePath) = "" Or Dir(pythonPath) = "" Then
-        MsgBox "Keep this workbook, generator files, template, and .venv folder together in TSQ_A3_Generator.", vbCritical
+        MsgBox "Keep this workbook, generator files, template, and .venv folder together.", vbCritical
         Exit Sub
     End If
 
@@ -130,10 +130,10 @@ Private Sub GenerateTSQA3ForRow(ByVal sourceRow As Long, ByVal sourceSheetName A
         " --sheet " & QuoteForShell(sourceSheetName) & _
         " --row " & CStr(sourceRow) & _
         " --template " & QuoteForShell(templatePath) & _
-        " --output-dir " & QuoteForShell(baseFolder & "/Generated TSQ A3") & _
-        " > " & QuoteForShell(baseFolder & "/Generated TSQ A3.log") & " 2>&1"
+        " --output-dir " & QuoteForShell(baseFolder & "/Ho so thanh nien da tao") & _
+        " > " & QuoteForShell(baseFolder & "/Tao ho so Word.log") & " 2>&1"
     Shell command, vbNormalFocus
-    MsgBox "Generating Word document. Check the Generated TSQ A3 folder in a moment.", vbInformation
+    MsgBox "Generating Word document. Check the Ho so thanh nien da tao folder in a moment.", vbInformation
 End Sub
 
 Private Function QuoteForShell(ByVal value As String) As String
