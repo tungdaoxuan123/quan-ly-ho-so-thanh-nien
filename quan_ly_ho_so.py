@@ -38,6 +38,7 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
+CACHE_SEARCH_SCOPE = "identity-v1"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 FILTER_DB_COLUMNS = {
     "birth_year": ("birth_year", "birth_year_key"),
@@ -110,6 +111,7 @@ state = {
     "last_output_dir": None,
 }
 state_lock = threading.RLock()
+_settings_file = None
 
 
 class WorkbookError(Exception):
@@ -125,13 +127,38 @@ class StaleWorkbookError(WorkbookError):
 
 
 def settings_path():
+    """Return a writable path for settings and the SQLite cache.
+
+    LocalAppData is normally the right place on Windows, but it can be
+    unavailable on managed computers.  In that case keep the app's local
+    state beside the application rather than preventing the workbook from
+    loading altogether.
+    """
+    global _settings_file
+    if _settings_file is not None:
+        return _settings_file
+
     if os.name == "nt":
         root = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     elif sys.platform == "darwin":
         root = Path.home() / "Library" / "Application Support"
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "Quan_Ly_Ho_So_Thanh_Nien" / "settings.json"
+
+    preferred = root / "Quan_Ly_Ho_So_Thanh_Nien"
+    fallbacks = (BASE_DIR / ".quan_ly_ho_so_data", Path(tempfile.gettempdir()) / "Quan_Ly_Ho_So_Thanh_Nien")
+    for directory in (preferred, *fallbacks):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            logging.warning("Cannot use application-data folder %s: %s", directory, error)
+            continue
+        if directory != preferred:
+            logging.warning("Using fallback application-data folder: %s", directory)
+        _settings_file = directory / "settings.json"
+        return _settings_file
+
+    raise WorkbookError("Không thể tạo thư mục lưu dữ liệu ứng dụng.")
 
 
 def default_database_path():
@@ -255,7 +282,11 @@ def cached_workbook_info(path, signature):
             metadata = metadata_values(connection)
         finally:
             connection.close()
-        if metadata.get("workbook") != str(path) or metadata.get("signature") != signature_token(signature):
+        if (
+            metadata.get("workbook") != str(path)
+            or metadata.get("signature") != signature_token(signature)
+            or metadata.get("search_scope") != CACHE_SEARCH_SCOPE
+        ):
             return None
         headers = json.loads(metadata["headers"])
         return metadata["sheet"], headers, int(metadata["record_count"]), datetime.fromisoformat(metadata["loaded_at"])
@@ -311,7 +342,9 @@ def sync_workbook_to_database(path):
                 ethnicity = data.get("Dân tộc", "")
                 religion = data.get("Tôn giáo", "")
                 address = f"{data.get('Thường trú', '')} {data.get('Nơi ở hiện nay', '')}".strip()
-                searchable = " ".join([stt, name, citizen_id, *data.values()])
+                # Quick search intentionally matches only the identity fields advertised by the UI.
+                # Advanced filters cover occupation, education, address, and the remaining profile data.
+                searchable = " ".join([stt, name, citizen_id])
                 batch.append((
                     row_number, stt, name, birth_year, citizen_id, occupation, education, ethnicity, religion,
                     address, fold(searchable), fold(birth_year), fold(occupation), fold(education), fold(ethnicity),
@@ -334,6 +367,7 @@ def sync_workbook_to_database(path):
                 "headers": json.dumps(headers, ensure_ascii=False, separators=(",", ":")),
                 "record_count": str(count),
                 "loaded_at": loaded_at.isoformat(),
+                "search_scope": CACHE_SEARCH_SCOPE,
             }
             connection.executemany(
                 "INSERT OR REPLACE INTO cache_metadata(key, value) VALUES (?, ?)", metadata.items()
@@ -771,7 +805,7 @@ PAGE = r"""
   {% else %}
     <section class="card summary"><div><strong>{{ workbook_name }}</strong><div class="status">Trang tính: {{ sheet_name }} · {{ record_count }} hồ sơ · Đồng bộ SQLite lúc {{ loaded_at }}</div></div><div class="actions"><a class="button secondary" href="{{ url_for('refresh') }}">Làm mới</a><a class="button secondary" href="{{ url_for('open_excel') }}">Mở bằng Excel</a><a class="button" href="{{ url_for('new_person') }}">Thêm hồ sơ</a><a class="button secondary" href="{{ url_for('choose_workbook') }}">Đổi tệp Excel</a></div></section>
     {% if read_only %}<p class="notice">Tệp .xlsm chỉ có thể xem và tạo Word trong ứng dụng. Hãy dùng Excel để lưu thay đổi.</p>{% endif %}
-    <form class="card quick-search" action="{{ url_for('index') }}" method="get"><h2>Tìm kiếm hồ sơ</h2><div class="search-row"><label>Họ tên, STT hoặc CCCD<input name="q" value="{{ query }}" placeholder="Ví dụ: Nguyễn Văn A, 12 hoặc số CCCD" autofocus></label><button type="submit">Tìm kiếm</button><a class="button secondary" href="{{ url_for('index') }}">Xóa tìm kiếm</a></div>
+    <form class="card quick-search" action="{{ url_for('index') }}" method="get"><h2>Tìm kiếm hồ sơ</h2><div class="search-row"><label>Họ tên, STT hoặc CCCD<input name="q" value="{{ query }}" placeholder="Ví dụ: Nguyễn, 12 hoặc số CCCD" autofocus></label><button type="submit">Tìm kiếm</button><a class="button secondary" href="{{ url_for('index') }}">Xóa tìm kiếm</a></div>
       <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary><div class="filter-grid"><label>Năm sinh<select name="birth_year"><option value="">Tất cả</option>{% for value in options.birth_year %}<option value="{{ value }}" {% if filters.birth_year == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Nghề nghiệp<select name="occupation"><option value="">Tất cả</option>{% for value in options.occupation %}<option value="{{ value }}" {% if filters.occupation == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Trình độ văn hóa<select name="education"><option value="">Tất cả</option>{% for value in options.education %}<option value="{{ value }}" {% if filters.education == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Dân tộc<select name="ethnicity"><option value="">Tất cả</option>{% for value in options.ethnicity %}<option value="{{ value }}" {% if filters.ethnicity == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Tôn giáo<select name="religion"><option value="">Tất cả</option>{% for value in options.religion %}<option value="{{ value }}" {% if filters.religion == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
     </form>
     <div class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</div>

@@ -93,8 +93,17 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertEqual(app.state["record_count"], 3)
         self.assertNotIn("records", app.state)
         matches, count = app.query_records("nguyen", {}, limit=50, offset=0)
-        self.assertGreater(count, 0)
-        self.assertTrue(any("NGUYỄN" in record["name"] for record in matches))
+        self.assertEqual(count, 1)
+        self.assertEqual([record["stt"] for record in matches], ["1"])
+
+        accented_matches, accented_count = app.query_records("Nguyễn", {}, limit=50, offset=0)
+        self.assertEqual(accented_count, 1)
+        self.assertEqual([record["stt"] for record in accented_matches], ["1"])
+
+    def test_quick_search_does_not_match_unrelated_profile_fields(self):
+        matches, count = app.query_records("Ha Noi", {}, limit=50, offset=0)
+        self.assertEqual(count, 0)
+        self.assertEqual(matches, [])
 
     def test_filters_ignore_case_and_accents(self):
         occupation = app.query_filter_options("occupation")[0]
