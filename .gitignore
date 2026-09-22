@@ -1,0 +1,33 @@
+# Local Python environment and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local application data
+uploads/
+Generated TSQ A3/
+generated-sample/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+settings.json
+
+# Excel source data and backups
+*.xlsx
+*.xlsm
+*.backup-*.xlsx
+
+# Generated documents outside ignored output directories
+*.generated.docx
+
+# Build output
+build/
+dist/
+*.spec
+
+# Local secrets and operating-system files
+.env
+.env.*
+.DS_Store
+*.log
