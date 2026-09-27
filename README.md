@@ -15,7 +15,7 @@ python -m pip install -r requirements.txt
 Sau đó, nhấp đúp [Chạy Quản Lý Hồ Sơ.command](Chay%20Quan%20Ly%20Ho%20So.command), hoặc chạy:
 
 ```bash
-.venv/bin/python quan_ly_ho_so.py
+.venv/bin/python run.py
 ```
 
 Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
@@ -48,3 +48,13 @@ SQLite chỉ là cache phục vụ ứng dụng. Trên Mac, cache nằm trong `~
 - Ứng dụng giữ nguyên các trang tính khác, định dạng ô và các cột không chỉnh sửa. Ứng dụng không xóa hồ sơ.
 - Không dùng Excel và ứng dụng để lưu cùng lúc. Thay đổi trong Excel chưa lưu sẽ không thể hiển thị trong ứng dụng.
 - Tìm kiếm, lọc và phân trang dùng SQLite nên chỉ nạp trang hiện tại vào RAM. Khi lưu thay đổi, thư viện Excel vẫn cần mở toàn bộ workbook; tệp Excel rất lớn có thể dùng nhiều RAM trong lúc lưu.
+
+## Dành cho lập trình viên
+
+Mã nguồn nằm trong `src/quan_ly_ho_so/` (src-layout), chia theo chức năng: `config.py`/`state.py`/`errors.py` (cấu hình và trạng thái dùng chung), `workbook/` (đọc/ghi Excel và cache SQLite), `forms/` (định nghĩa và kiểm tra trường biểu mẫu), `web/` (giao diện HTML), `word/` (tạo tệp Word), `app.py` (Flask app và route). `run.py` ở thư mục gốc chỉ thêm `src/` vào đường dẫn rồi khởi động ứng dụng — đây là tệp mà các launcher (`.command`/`.bat`) và `build_windows.bat` gọi tới.
+
+Chạy bộ kiểm thử:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -t . -v
+```

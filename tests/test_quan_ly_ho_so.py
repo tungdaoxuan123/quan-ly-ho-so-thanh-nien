@@ -5,11 +5,11 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-import quan_ly_ho_so as app
-from tao_ho_so_word import generate_document
+import quan_ly_ho_so.app as app
+from quan_ly_ho_so.word.export import generate_document
 
 
-TEMPLATE = Path(__file__).resolve().parent / "Mau_Ho_So_Thanh_Nien.docx"
+TEMPLATE = Path(__file__).resolve().parent.parent / "Mau_Ho_So_Thanh_Nien.docx"
 
 
 def create_test_workbook(path):
