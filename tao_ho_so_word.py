@@ -2,11 +2,14 @@
 """Generate one youth profile Word document from a selected Excel row."""
 
 import argparse
+import copy
 import re
 from pathlib import Path
 
 from docx import Document
 from openpyxl import load_workbook
+
+WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
 def text(value):
@@ -28,8 +31,16 @@ def replace_tokens(document, values):
                 paragraphs.extend(cell.paragraphs)
     for paragraph in paragraphs:
         for run in paragraph.runs:
+            # Reassigning run.text rebuilds the run from plain text, which would
+            # silently delete non-text content (like the photo-box drawing) from
+            # runs that don't hold a token. Only touch runs that need replacing.
+            if "{{" not in run.text:
+                continue
+            new_text = run.text
             for key, value in values.items():
-                run.text = run.text.replace("{{" + key + "}}", value)
+                new_text = new_text.replace("{{" + key + "}}", value)
+            if new_text != run.text:
+                run.text = new_text
 
 
 def unique_output_path(output_dir, name):
@@ -44,7 +55,7 @@ def unique_output_path(output_dir, name):
         number += 1
 
 
-def generate_document(workbook_path, sheet_name, row_number, template_path, output_dir):
+def build_document(workbook_path, sheet_name, row_number, template_path):
     if row_number < 3:
         raise ValueError("Select a person row (row 3 or later), not a header row.")
     if not workbook_path.is_file() or not template_path.is_file():
@@ -110,11 +121,77 @@ def generate_document(workbook_path, sheet_name, row_number, template_path, outp
 
     document = Document(template_path)
     replace_tokens(document, values)
+    return document, values
+
+
+def generate_document(workbook_path, sheet_name, row_number, template_path, output_dir):
+    document, values = build_document(workbook_path, sheet_name, row_number, template_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_name = f"{values['record_stt']} - {values['common_name']}" if values["record_stt"] else values["common_name"]
     output = unique_output_path(output_dir, output_name)
     document.save(output)
     return output
+
+
+def _boundary_paragraph(document):
+    """Return the paragraph element that ends Part A (I-IV) and carries the
+    section break into Part B (V-VI). The template always has exactly one
+    such mid-body section break."""
+    for paragraph in document.paragraphs:
+        if paragraph._p.find(f".//{WORD_NS}sectPr") is not None:
+            return paragraph._p
+    raise ValueError("Template is missing the section break between Part A (I-IV) and Part B (V-VI).")
+
+
+def split_parts(document):
+    """Split a generated document into Part A (header..IV, ending in the
+    boundary paragraph that holds Section A's page/column setup) and Part B
+    (V-VI, everything after the boundary paragraph up to the document's own
+    trailing section properties)."""
+    body = document.element.body
+    boundary = _boundary_paragraph(document)
+    children = list(body)
+    boundary_index = children.index(boundary)
+    part_a = children[: boundary_index + 1]
+    part_b = children[boundary_index + 1 : -1]
+    section_properties = boundary.find(f".//{WORD_NS}sectPr")
+    return part_a, part_b, section_properties
+
+
+def combine_booklet(documents, template_path):
+    """Combine several generated documents into one printable booklet.
+
+    Printing these forms back-to-back on A3 and folding them into a booklet
+    leaves the second column of every person's Part A (I-IV) mostly blank.
+    To avoid wasting that space, each sheet instead carries the *previous*
+    person's Part B (V-VI) next to the *current* person's Part A, with the
+    very last person's Part B wrapped around to the front of the file.
+    """
+    if not documents:
+        raise ValueError("No documents to combine.")
+
+    parts = [split_parts(document) for document in documents]
+    count = len(documents)
+
+    combined = Document(template_path)
+    body = combined.element.body
+    for child in list(body):
+        body.remove(child)
+
+    for index in range(count):
+        previous_part_b = parts[index - 1][1]
+        current_part_a, _, current_section_properties = parts[index]
+        for element in previous_part_b:
+            body.append(copy.deepcopy(element))
+        if index < count - 1:
+            for element in current_part_a:
+                body.append(copy.deepcopy(element))
+        else:
+            for element in current_part_a[:-1]:
+                body.append(copy.deepcopy(element))
+            body.append(copy.deepcopy(current_section_properties))
+
+    return combined
 
 
 def main():
