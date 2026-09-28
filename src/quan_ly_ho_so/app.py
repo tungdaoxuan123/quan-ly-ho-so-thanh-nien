@@ -22,9 +22,11 @@ from quan_ly_ho_so.config import (
     MAX_RECORDS_PER_PAGE,
     SUPPORTED_SUFFIXES,
     TEMPLATE,
+    UNSET_DIEN_FILTER,
     UPLOAD_DIR,
 )
 from quan_ly_ho_so.errors import StaleWorkbookError
+from quan_ly_ho_so.forms.enums import NvqsStatus
 from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
 from quan_ly_ho_so.security import csrf_token, valid_csrf
 from quan_ly_ho_so.state import state
@@ -36,6 +38,7 @@ from quan_ly_ho_so.workbook.cache import (
     find_record,
     query_filter_options,
     query_records,
+    set_record_type,
     signature_token,
 )
 from quan_ly_ho_so.workbook.manager import (
@@ -65,7 +68,10 @@ def index():
         "ethnicity": request.args.get("ethnicity", "").strip(),
         "religion": request.args.get("religion", "").strip(),
         "address": request.args.get("address", "").strip(),
+        "dien": request.args.get("dien", "").strip(),
     }
+    if filters["dien"] not in NvqsStatus.__members__ and filters["dien"] != UNSET_DIEN_FILTER:
+        filters["dien"] = ""
     options = {key: query_filter_options(key) for key in FILTER_DB_COLUMNS}
     for key, values in options.items():
         filters[key] = next((value for value in values if fold(value) == fold(filters[key])), filters[key])
@@ -104,6 +110,8 @@ def index():
         signature=signature_token(state["signature"]),
         csrf=csrf_token(),
         read_only=state["workbook"].suffix.lower() == ".xlsm",
+        dien_options=NvqsStatus.options(),
+        unset_dien=UNSET_DIEN_FILTER,
     )
 
 
@@ -237,9 +245,15 @@ def save_person_route():
         validation_errors.append("Hồ sơ đã thay đổi bên ngoài ứng dụng. Hãy làm mới và mở lại hồ sơ.")
     if state["workbook"].suffix.lower() == ".xlsm":
         validation_errors.append("Ứng dụng không hỗ trợ lưu biểu mẫu vào tệp .xlsm.")
-    render_page = render_preview if request.form.get("view") == "preview" else render_form
+    # Absent (rather than blank) means the posted form had no dropdown at all, so leave the stored status alone.
+    nvqs_type = request.form.get("nvqs_type")
+    if nvqs_type and nvqs_type not in NvqsStatus.__members__:
+        validation_errors.append("Diện nghĩa vụ quân sự không hợp lệ.")
+    is_preview = request.form.get("view") == "preview"
+    render_page = render_preview if is_preview else render_form
+    status_argument = {} if is_preview else {"nvqs_type": nvqs_type or ""}
     if validation_errors:
-        return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=validation_errors)
+        return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=validation_errors, **status_argument)
 
     headers_by_column = {definition["column"]: definition["header"] for definition in definitions}
     updates = {column: coerce_cell_value(headers_by_column[column], raw) for column, raw in values_by_column.items()}
@@ -247,12 +261,14 @@ def save_person_route():
         row, stt, backup = save_person(
             state["workbook"], state["sheet"], updates, request.form.get("signature", ""), original_stt=original_stt,
         )
+        if nvqs_type is not None:
+            set_record_type(state["workbook"], stt, nvqs_type)
         refresh_state(force=True)
         flash(f"Đã lưu hồ sơ STT {stt}. Bản sao lưu: {backup.name}", "success")
         return redirect(url_for("index"))
     except Exception as error:
         logging.exception("Could not save workbook: %s", error)
-        return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=[str(error)])
+        return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=[str(error)], **status_argument)
 
 
 @app.post("/generate/<stt>")

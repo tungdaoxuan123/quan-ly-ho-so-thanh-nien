@@ -8,8 +8,9 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from quan_ly_ho_so.config import CACHE_SEARCH_SCOPE, FILTER_DB_COLUMNS, SUPPORTED_SUFFIXES
+from quan_ly_ho_so.config import CACHE_SEARCH_SCOPE, FILTER_DB_COLUMNS, SUPPORTED_SUFFIXES, UNSET_DIEN_FILTER
 from quan_ly_ho_so.errors import StaleWorkbookError, WorkbookError
+from quan_ly_ho_so.forms.enums import NvqsStatus
 from quan_ly_ho_so.state import current_database_path, state
 from quan_ly_ho_so.utils.text import display_value, fold, normalized_header
 
@@ -61,6 +62,15 @@ def database_connection():
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        -- Manager-chosen NVQS status. Unlike `records`, this is NOT rebuilt from the workbook,
+        -- so it has to survive the DELETE/re-insert that every sync performs. Keyed by workbook
+        -- as well, because STT only identifies a person within one particular file.
+        CREATE TABLE IF NOT EXISTS record_types (
+            workbook TEXT NOT NULL,
+            stt TEXT NOT NULL,
+            type TEXT NOT NULL,
+            PRIMARY KEY (workbook, stt)
+        );
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY,
             row_number INTEGER NOT NULL,
@@ -81,7 +91,8 @@ def database_connection():
             religion_key TEXT NOT NULL,
             address_key TEXT NOT NULL,
             citizen_id_key TEXT NOT NULL,
-            data_json TEXT NOT NULL
+            data_json TEXT NOT NULL,
+            type TEXT
         );
         CREATE INDEX IF NOT EXISTS records_stt_idx ON records(stt);
         CREATE INDEX IF NOT EXISTS records_birth_year_idx ON records(birth_year_key);
@@ -92,12 +103,41 @@ def database_connection():
         CREATE INDEX IF NOT EXISTS records_citizen_id_idx ON records(citizen_id_key);
         """
     )
+    # Cache files created before the "type" column existed need an in-place upgrade;
+    # CREATE TABLE IF NOT EXISTS above leaves an already-existing table untouched.
+    existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(records)")}
+    if "type" not in existing_columns:
+        connection.execute("ALTER TABLE records ADD COLUMN type TEXT")
     connection.commit()
     return connection
 
 
 def metadata_values(connection):
     return {row["key"]: row["value"] for row in connection.execute("SELECT key, value FROM cache_metadata")}
+
+
+def stored_record_types(connection, workbook):
+    rows = connection.execute("SELECT stt, type FROM record_types WHERE workbook = ?", (str(workbook),))
+    return {row["stt"]: row["type"] for row in rows}
+
+
+def set_record_type(workbook, stt, type_code):
+    """Persist the NVQS status picked in the form, keeping it out of the rebuilt `records` table."""
+    connection = database_connection()
+    try:
+        with connection:
+            if type_code:
+                connection.execute(
+                    "INSERT OR REPLACE INTO record_types (workbook, stt, type) VALUES (?, ?, ?)",
+                    (str(workbook), display_value(stt), type_code),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM record_types WHERE workbook = ? AND stt = ?",
+                    (str(workbook), display_value(stt)),
+                )
+    finally:
+        connection.close()
 
 
 def cached_workbook_info(path, signature):
@@ -143,12 +183,13 @@ def sync_workbook_to_database(path):
             INSERT INTO records (
                 row_number, stt, name, birth_year, citizen_id, occupation, education, ethnicity, religion,
                 address, search_text, birth_year_key, occupation_key, education_key, ethnicity_key,
-                religion_key, address_key, citizen_id_key, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                religion_key, address_key, citizen_id_key, data_json, type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         count = 0
         batch = []
         loaded_at = datetime.now()
+        stored_types = stored_record_types(connection, path)
         with connection:
             connection.execute("DELETE FROM records")
             for row_number, values in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
@@ -175,6 +216,10 @@ def sync_workbook_to_database(path):
                     address, fold(searchable), fold(birth_year), fold(occupation), fold(education), fold(ethnicity),
                     fold(religion), fold(address), fold(citizen_id),
                     json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+                    # What the manager picked in the form wins: it is never written back to the
+                    # workbook, so a stale "Diện" column must not overwrite it. That optional
+                    # column is only a starting value for records nobody has set in the app yet.
+                    stored_types.get(stt) or NvqsStatus.type_for(data.get("Diện", "")),
                 ))
                 count += 1
                 if len(batch) >= 500:
@@ -221,6 +266,8 @@ def row_to_record(row):
         "citizen_id": row["citizen_id"],
         "occupation": row["occupation"],
         "data": json.loads(row["data_json"]),
+        "type": row["type"],
+        "dien": NvqsStatus.value_for(row["type"]),
     }
 
 
@@ -255,6 +302,12 @@ def query_records(query, filters, limit, offset):
     if address:
         conditions.append("address_key LIKE ? ESCAPE '\\'")
         parameters.append(f"%{escaped_like(address)}%")
+    dien = filters.get("dien", "")
+    if dien == UNSET_DIEN_FILTER:
+        conditions.append("(type IS NULL OR type = '')")
+    elif dien:
+        conditions.append("type = ?")
+        parameters.append(dien)
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
 
     connection = database_connection()
