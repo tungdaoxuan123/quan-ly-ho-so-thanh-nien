@@ -43,13 +43,13 @@ def replace_tokens(document, values):
                 run.text = new_text
 
 
-def unique_output_path(output_dir, name):
-    output = output_dir / (safe_filename(name) + ".docx")
+def unique_output_path(output_dir, name, suffix=".docx"):
+    output = output_dir / (safe_filename(name) + suffix)
     if not output.exists():
         return output
     number = 2
     while True:
-        candidate = output_dir / f"{safe_filename(name)} ({number}).docx"
+        candidate = output_dir / f"{safe_filename(name)} ({number}){suffix}"
         if not candidate.exists():
             return candidate
         number += 1

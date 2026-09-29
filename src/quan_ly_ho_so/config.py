@@ -16,6 +16,7 @@ def resource_dir():
 BASE_DIR = resource_dir()
 UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
+LIST_TEMPLATE = BASE_DIR / "Mau_Danh_Sach_Thanh_Nien.xlsx"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
 CACHE_SEARCH_SCOPE = "identity-v2"

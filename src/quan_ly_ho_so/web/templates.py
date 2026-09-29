@@ -8,7 +8,7 @@ from quan_ly_ho_so.forms.fields import field_definitions, form_values
 from quan_ly_ho_so.security import csrf_token
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
-from quan_ly_ho_so.workbook.cache import signature_token
+from quan_ly_ho_so.workbook.cache import record_files, signature_token
 
 BASE_CSS = r"""
     :root { color-scheme: light; --bg: #f3f5f9; --surface: #fff; --border: #dde3ec; --border-strong: #c3ccda; --text: #1a2438; --muted: #64718a; --primary: #1d4f91; --primary-hover: #173f75; --primary-soft: #e7eef8; --ok: #1f5c33; --ok-bg: #e8f5ec; --err: #9a2b2b; --err-bg: #fdeceb; --shadow: 0 1px 2px rgba(20,32,56,.06), 0 4px 14px rgba(20,32,56,.05); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
@@ -31,7 +31,7 @@ BASE_CSS = r"""
     button.secondary, .button.secondary { background: #fff; color: var(--primary); border-color: var(--border-strong); }
     button.secondary:hover, .button.secondary:hover { background: var(--primary-soft); border-color: var(--primary); }
     button:focus-visible, .button:focus-visible, summary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(29,79,145,.3); }
-    button:disabled { opacity: .45; cursor: not-allowed; background: var(--primary); border-color: var(--primary); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
     .card, form.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: var(--shadow); }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     .notice { padding: 12px 16px; border-radius: 8px; background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(31,92,51,.2); margin: 0 0 14px; }
@@ -95,9 +95,9 @@ PAGE = r"""
     <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
     <section class="selected-section" id="selected-panel" aria-labelledby="selected-heading" hidden><div class="selected-heading"><h2 id="selected-heading">Hồ sơ đã chọn (<span id="selected-total">0</span>)</h2><span class="muted">Lựa chọn được giữ lại khi lọc hoặc đổi trang.</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button></div><ul class="selected-list" id="selected-list"></ul></section>
     <section class="card table-card">
-      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button></div></div>
+      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button><button type="submit" form="batch-form" id="batch-excel-btn" class="secondary" formaction="{{ url_for('export_batch_excel') }}" disabled>Tạo Excel hàng loạt</button></div></div>
       <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="8" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
-      <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.</p>
+      <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập. Bấm "Tạo Excel hàng loạt" để xuất danh sách những hồ sơ đã chọn ra tệp Excel theo mẫu, kèm cột "Diện" ở cuối.</p>
     </section>
     {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
     <script>
@@ -148,6 +148,7 @@ PAGE = r"""
         const count = selectedRecords.size;
         document.getElementById('selected-count').textContent = count ? 'Đã chọn ' + count + ' hồ sơ' : 'Chưa chọn hồ sơ';
         document.getElementById('batch-btn').disabled = !count;
+        document.getElementById('batch-excel-btn').disabled = !count;
         document.getElementById('clear-selection').disabled = !count;
         const visibleSelected = rowCheckboxes.filter(function(box){ return box.checked; }).length;
         selectAll.disabled = !rowCheckboxes.length;
@@ -216,17 +217,62 @@ FORM_PAGE = r"""
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; } textarea { min-height: 84px; resize: vertical; } .wide { grid-column: 1 / -1; }
   .form-actions { position: sticky; bottom: 0; display: flex; gap: 10px; flex-wrap: wrap; margin: 20px -20px -20px; padding: 14px 20px; background: rgba(255,255,255,.96); border-top: 1px solid var(--border); border-radius: 0 0 12px 12px; backdrop-filter: blur(4px); }
   .status-card { border: 1px solid #cddcec; background: #f2f7fc; border-radius: 9px; padding: 14px 16px; margin-bottom: 14px; } .status-card label { max-width: 520px; } .status-card .hint { color: #4b5875; font-size: 13px; font-weight: 500; margin: 6px 0 0; }
+  .upload-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; } .upload-row input[type=file] { flex: 1; min-width: 240px; }
+  .doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
+  .doc-item { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+  .doc-item img { width: 100%; height: 190px; object-fit: cover; object-position: top; cursor: zoom-in; display: block; background: #eef2f7; }
+  .doc-meta { padding: 8px 10px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .doc-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-meta button { padding: 4px 9px; font-size: 12px; background: #fff; color: #a3323b; border: 1px solid #e3c2c5; border-radius: 6px; }
+  .doc-empty { color: var(--muted); margin: 0; }
+  .viewer { position: fixed; inset: 0; z-index: 50; background: rgba(9,17,32,.88); border: 0; padding: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%; }
+  .viewer::backdrop { background: rgba(9,17,32,.88); }
+  .viewer-body { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .viewer img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; border-radius: 4px; }
+  .viewer-close { position: absolute; top: 16px; right: 20px; background: #fff; color: #12213d; border: 0; border-radius: 7px; padding: 8px 14px; cursor: pointer; }
   @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
 </style></head><body>
 <header class="topbar"><div class="topbar-inner"><span class="brand-mark">HS</span><div><div class="topbar-title" style="color:#fff;font-weight:700;font-size:17px">Quản lý hồ sơ thanh niên</div><div class="topbar-sub">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</div></div></div></header>
 <main class="container">
 <h1>{{ title }}</h1><p class="muted">Tệp Excel: {{ workbook_name }} · Trang tính: {{ sheet_name }}</p><p class="muted"><span class="required">*</span> Trường bắt buộc</p>
+{% with messages = get_flashed_messages(with_categories=true) %}{% for category, flashed in messages %}<p class="notice {{ 'error' if category == 'error' else '' }}">{{ flashed }}</p>{% endfor %}{% endwith %}
 {% if message %}<p class="notice">{{ message }}</p>{% endif %}{% if errors %}<div class="notice error"><strong>Chưa thể lưu hồ sơ:</strong><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
 <form class="record" action="{{ url_for('save_person_route') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="original_stt" value="{{ original_stt }}"><input type="hidden" name="signature" value="{{ signature }}"><input type="hidden" name="view" value="form">
   <div class="status-card"><label>Diện (nghĩa vụ quân sự)<select name="nvqs_type" {% if read_only %}disabled{% endif %}><option value="">&lt;chưa có&gt;</option>{% for code, text in nvqs_options %}<option value="{{ code }}" {% if nvqs_type == code %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label><p class="hint">Diện được lưu cùng hồ sơ trong cơ sở dữ liệu của ứng dụng.</p></div>
   {% for section in sections %}<details class="section-card" {% if section.name in open_sections %}open{% endif %}><summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary><div class="section-body"><div class="grid">{% for field in section.fields %}<label class="{{ 'wide' if field.input_type == 'textarea' else '' }}"><span>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</span>{% if field.input_type == 'textarea' %}<textarea name="{{ field.name }}" {% if read_only %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>{% else %}<input type="{{ field.input_type }}" name="{{ field.name }}" value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if read_only %}readonly{% endif %}>{% endif %}</label>{% endfor %}</div></div></details>{% endfor %}
+  <details class="section-card" {% if open_documents %}open{% endif %}><summary><span>Hồ sơ liên quan</span><span class="field-count">{{ documents|length }} ảnh</span></summary><div class="section-body">
+    {% if not original_stt %}
+      <p class="doc-empty">Hãy lưu hồ sơ trước, sau đó mở lại để thêm tài liệu liên quan.</p>
+    {% elif not owner_citizen_id %}
+      <p class="doc-empty">Hồ sơ chưa có số CCCD. Tài liệu liên quan được lưu theo số CCCD, nên hãy nhập số CCCD và lưu hồ sơ trước.</p>
+    {% else %}
+      <div class="upload-row"><input type="file" name="document" form="attach-form" accept=".pdf,.doc,.docx,.docm,.rtf,.odt,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tif,.tiff" required><button type="submit" form="attach-form">Tải tài liệu lên</button></div>
+      <p class="hint muted">Tệp Word, PDF hoặc ảnh sẽ được chuyển thành ảnh từng trang và chỉ lưu trong cơ sở dữ liệu. Bấm vào ảnh để xem phóng to.</p>
+    {% endif %}
+    {% if documents %}
+      <div class="doc-grid">{% for document in documents %}<figure class="doc-item" style="margin:0"><img src="{{ url_for('record_file', stt=original_stt, file_id=document.id) }}?size=thumb" alt="{{ document.source_name }} trang {{ document.page }}" loading="lazy" data-full="{{ url_for('record_file', stt=original_stt, file_id=document.id) }}"><figcaption class="doc-meta"><span title="{{ document.source_name }}">{{ document.source_name }} · tr.{{ document.page }}</span><button type="submit" form="delete-form-{{ document.id }}" title="Xóa ảnh này">Xóa</button></figcaption></figure>{% endfor %}</div>
+    {% else %}
+      <p class="doc-empty">Chưa có thông tin</p>
+    {% endif %}
+  </div></details>
   <div class="form-actions">{% if not read_only %}<button type="submit">Lưu vào Excel</button>{% endif %}<a class="button secondary" href="{{ preview_url }}">Xem trước biểu mẫu</a><a class="button secondary" href="{{ url_for('index') }}">Quay lại danh sách</a></div>
-</form></main></body></html>
+</form>
+{% if original_stt %}
+  <form id="attach-form" action="{{ url_for('upload_record_file', stt=original_stt) }}" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+  {% for document in documents %}<form id="delete-form-{{ document.id }}" action="{{ url_for('remove_record_file', stt=original_stt, file_id=document.id) }}" method="post" onsubmit="return confirm('Xóa ảnh tài liệu này khỏi hồ sơ?')"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>{% endfor %}
+{% endif %}
+<dialog class="viewer" id="viewer"><div class="viewer-body"><img id="viewer-image" alt="Ảnh tài liệu phóng to"></div><button type="button" class="viewer-close" onclick="document.getElementById('viewer').close()">Đóng</button></dialog>
+<script>
+  (function () {
+    var viewer = document.getElementById('viewer'), image = document.getElementById('viewer-image');
+    document.querySelectorAll('.doc-item img').forEach(function (thumb) {
+      thumb.addEventListener('click', function () { image.src = thumb.dataset.full; viewer.showModal(); });
+    });
+    viewer.addEventListener('click', function (event) { if (event.target === viewer || event.target.classList.contains('viewer-body')) viewer.close(); });
+    viewer.addEventListener('close', function () { image.removeAttribute('src'); });
+  })();
+</script>
+</main></body></html>
 """
 
 
@@ -242,8 +288,13 @@ def render_form(title, record=None, values=None, errors=None, message=None, nvqs
     grouped = []
     for section_name, _ in FORM_GROUPS:
         grouped.append({"name": section_name, "fields": [field for field in definitions if field["section"] == section_name]})
+    owner_citizen_id = record["citizen_id"] if record else ""
+    documents = record_files(state["workbook"], owner_citizen_id) if owner_citizen_id and state["workbook"] else []
     return render_template_string(
         FORM_PAGE,
+        documents=documents,
+        open_documents=bool(documents),
+        owner_citizen_id=owner_citizen_id,
         title=title,
         workbook_name=state["workbook"].name if state["workbook"] else "",
         sheet_name=state["sheet"] or "",

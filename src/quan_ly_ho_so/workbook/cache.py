@@ -51,11 +51,78 @@ def validate_workbook_path(path):
     return path
 
 
+def _stt_keyed_tables(connection):
+    """Names of the app-owned tables still keyed by the old, shifting STT."""
+    stale = []
+    for table in ("record_types", "record_files"):
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if columns and "citizen_id" not in columns:
+            stale.append(table)
+    return stale
+
+
+def _rekey_to_citizen_id(connection, tables):
+    """Re-point rows from STT onto the owner's CCCD, using whatever the cache can still match.
+
+    A row whose STT no longer resolves cannot be attributed to anyone, so it is dropped rather
+    than left pointing at whoever happens to hold that number now.
+    """
+    for table in tables:
+        columns = [row["name"] for row in connection.execute(f"PRAGMA table_info({table}_by_stt)")]
+        carried = [name for name in columns if name not in ("stt", "id")]
+        selected = ", ".join(f"old.{name}" for name in carried)
+        moved = connection.execute(
+            f"""
+            INSERT INTO {table} (citizen_id, {", ".join(carried)})
+            SELECT records.citizen_id, {selected}
+            FROM {table}_by_stt AS old
+            JOIN records ON records.stt = old.stt
+            WHERE records.citizen_id <> ''
+            """
+        ).rowcount
+        dropped = connection.execute(f"SELECT COUNT(*) FROM {table}_by_stt").fetchone()[0] - moved
+        connection.execute(f"DROP TABLE {table}_by_stt")
+        logging.info("Re-keyed %s to CCCD: %d row(s) moved, %d dropped", table, moved, dropped)
+
+
+def _stop_reusing_file_ids(connection):
+    """Rebuild record_files with AUTOINCREMENT if it predates that fix, keeping existing ids."""
+    created = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record_files'"
+    ).fetchone()
+    if created is None or "AUTOINCREMENT" in created["sql"]:
+        return
+    columns = [row["name"] for row in connection.execute("PRAGMA table_info(record_files)")]
+    names = ", ".join(columns)
+    connection.executescript(
+        f"""
+        ALTER TABLE record_files RENAME TO record_files_reused_ids;
+        CREATE TABLE record_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workbook TEXT NOT NULL,
+            citizen_id TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            image BLOB NOT NULL,
+            thumbnail BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO record_files ({names}) SELECT {names} FROM record_files_reused_ids;
+        DROP TABLE record_files_reused_ids;
+        CREATE INDEX IF NOT EXISTS record_files_owner_idx ON record_files(workbook, citizen_id);
+        """
+    )
+    logging.info("Rebuilt record_files so deleted image ids are never handed out again")
+
+
 def database_connection():
     path = current_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
     connection.row_factory = sqlite3.Row
+    stale_tables = _stt_keyed_tables(connection)
+    for table in stale_tables:
+        connection.execute(f"ALTER TABLE {table} RENAME TO {table}_by_stt")
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS cache_metadata (
@@ -63,14 +130,30 @@ def database_connection():
             value TEXT NOT NULL
         );
         -- Manager-chosen NVQS status. Unlike `records`, this is NOT rebuilt from the workbook,
-        -- so it has to survive the DELETE/re-insert that every sync performs. Keyed by workbook
-        -- as well, because STT only identifies a person within one particular file.
+        -- so it has to survive the DELETE/re-insert that every sync performs. Keyed by CCCD
+        -- rather than STT, because STT shifts whenever rows are inserted or renumbered in Excel;
+        -- the workbook is part of the key since the same person may appear in separate files.
         CREATE TABLE IF NOT EXISTS record_types (
             workbook TEXT NOT NULL,
-            stt TEXT NOT NULL,
+            citizen_id TEXT NOT NULL,
             type TEXT NOT NULL,
-            PRIMARY KEY (workbook, stt)
+            PRIMARY KEY (workbook, citizen_id)
         );
+        -- Related paperwork, already rendered to page images. Also app-owned data that the
+        -- workbook knows nothing about, so it must outlive the rebuild of `records` below.
+        -- AUTOINCREMENT matters here: a plain INTEGER PRIMARY KEY hands a deleted row's id to the
+        -- next upload, so an image URL would quietly start serving a different document.
+        CREATE TABLE IF NOT EXISTS record_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workbook TEXT NOT NULL,
+            citizen_id TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            page INTEGER NOT NULL,
+            image BLOB NOT NULL,
+            thumbnail BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS record_files_owner_idx ON record_files(workbook, citizen_id);
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY,
             row_number INTEGER NOT NULL,
@@ -108,6 +191,9 @@ def database_connection():
     existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(records)")}
     if "type" not in existing_columns:
         connection.execute("ALTER TABLE records ADD COLUMN type TEXT")
+    if stale_tables:
+        _rekey_to_citizen_id(connection, stale_tables)
+    _stop_reusing_file_ids(connection)
     connection.commit()
     return connection
 
@@ -117,25 +203,115 @@ def metadata_values(connection):
 
 
 def stored_record_types(connection, workbook):
-    rows = connection.execute("SELECT stt, type FROM record_types WHERE workbook = ?", (str(workbook),))
-    return {row["stt"]: row["type"] for row in rows}
+    rows = connection.execute("SELECT citizen_id, type FROM record_types WHERE workbook = ?", (str(workbook),))
+    return {row["citizen_id"]: row["type"] for row in rows}
 
 
-def set_record_type(workbook, stt, type_code):
+def set_record_type(workbook, citizen_id, type_code):
     """Persist the NVQS status picked in the form, keeping it out of the rebuilt `records` table."""
     connection = database_connection()
     try:
         with connection:
             if type_code:
                 connection.execute(
-                    "INSERT OR REPLACE INTO record_types (workbook, stt, type) VALUES (?, ?, ?)",
-                    (str(workbook), display_value(stt), type_code),
+                    "INSERT OR REPLACE INTO record_types (workbook, citizen_id, type) VALUES (?, ?, ?)",
+                    (str(workbook), display_value(citizen_id), type_code),
                 )
             else:
                 connection.execute(
-                    "DELETE FROM record_types WHERE workbook = ? AND stt = ?",
-                    (str(workbook), display_value(stt)),
+                    "DELETE FROM record_types WHERE workbook = ? AND citizen_id = ?",
+                    (str(workbook), display_value(citizen_id)),
                 )
+    finally:
+        connection.close()
+
+
+def move_record_owner(workbook, old_citizen_id, new_citizen_id):
+    """Carry the status and documents across when a record's CCCD is corrected."""
+    old_citizen_id, new_citizen_id = display_value(old_citizen_id), display_value(new_citizen_id)
+    if not old_citizen_id or not new_citizen_id or old_citizen_id == new_citizen_id:
+        return
+    connection = database_connection()
+    try:
+        with connection:
+            connection.execute(
+                "UPDATE record_files SET citizen_id = ? WHERE workbook = ? AND citizen_id = ?",
+                (new_citizen_id, str(workbook), old_citizen_id),
+            )
+            # The status is one row per owner, so clear any stub already sitting on the new CCCD.
+            connection.execute(
+                "DELETE FROM record_types WHERE workbook = ? AND citizen_id = ?",
+                (str(workbook), new_citizen_id),
+            )
+            connection.execute(
+                "UPDATE record_types SET citizen_id = ? WHERE workbook = ? AND citizen_id = ?",
+                (new_citizen_id, str(workbook), old_citizen_id),
+            )
+    finally:
+        connection.close()
+
+
+def add_record_files(workbook, citizen_id, source_name, pages):
+    """Store the rendered pages of one uploaded document against a record."""
+    created_at = datetime.now().isoformat()
+    connection = database_connection()
+    try:
+        with connection:
+            connection.executemany(
+                """
+                INSERT INTO record_files (workbook, citizen_id, source_name, page, image, thumbnail, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (str(workbook), display_value(citizen_id), source_name, number, image, thumbnail, created_at)
+                    for number, (image, thumbnail) in enumerate(pages, start=1)
+                ],
+            )
+    finally:
+        connection.close()
+
+
+def record_files(workbook, citizen_id):
+    """List the stored pages for a record without pulling the image data along."""
+    if not display_value(citizen_id):
+        return []
+    connection = database_connection()
+    try:
+        rows = connection.execute(
+            """
+            SELECT id, source_name, page, created_at
+            FROM record_files WHERE workbook = ? AND citizen_id = ?
+            ORDER BY created_at, id
+            """,
+            (str(workbook), display_value(citizen_id)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def record_file_image(workbook, citizen_id, file_id, thumbnail=False):
+    column = "thumbnail" if thumbnail else "image"
+    connection = database_connection()
+    try:
+        row = connection.execute(
+            f"SELECT {column} AS data FROM record_files WHERE id = ? AND workbook = ? AND citizen_id = ?",
+            (file_id, str(workbook), display_value(citizen_id)),
+        ).fetchone()
+        return row["data"] if row is not None else None
+    finally:
+        connection.close()
+
+
+def delete_record_file(workbook, citizen_id, file_id):
+    connection = database_connection()
+    try:
+        with connection:
+            cursor = connection.execute(
+                "DELETE FROM record_files WHERE id = ? AND workbook = ? AND citizen_id = ?",
+                (file_id, str(workbook), display_value(citizen_id)),
+            )
+        return cursor.rowcount > 0
     finally:
         connection.close()
 
@@ -219,7 +395,7 @@ def sync_workbook_to_database(path):
                     # What the manager picked in the form wins: it is never written back to the
                     # workbook, so a stale "Diện" column must not overwrite it. That optional
                     # column is only a starting value for records nobody has set in the app yet.
-                    stored_types.get(stt) or NvqsStatus.type_for(data.get("Diện", "")),
+                    stored_types.get(citizen_id) or NvqsStatus.type_for(data.get("Diện", "")),
                 ))
                 count += 1
                 if len(batch) >= 500:

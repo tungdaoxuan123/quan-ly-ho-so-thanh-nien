@@ -19,6 +19,8 @@ settings.json
 *.xlsx
 *.xlsm
 *.backup-*.xlsx
+# ...but the blank list template is part of the application, not somebody's data
+!Mau_Danh_Sach_Thanh_Nien.xlsx
 
 # Generated documents outside ignored output directories
 *.generated.docx
