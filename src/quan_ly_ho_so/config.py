@@ -18,8 +18,10 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
-CACHE_SEARCH_SCOPE = "identity-v1"
+CACHE_SEARCH_SCOPE = "identity-v2"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
+# Sentinel for the "Diện" filter, since an empty value already means "no filter".
+UNSET_DIEN_FILTER = "__none__"
 FILTER_DB_COLUMNS = {
     "birth_year": ("birth_year", "birth_year_key"),
     "occupation": ("occupation", "occupation_key"),
