@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
@@ -12,19 +13,32 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, flash, jsonify, redirect, render_template_string, request, send_from_directory, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template_string,
+    request,
+    send_from_directory,
+    url_for,
+)
 from werkzeug.utils import secure_filename
 
 from quan_ly_ho_so.config import (
     DEFAULT_OUTPUT_NAME,
     FILTER_DB_COLUMNS,
     FORM_GROUPS,
+    LIST_TEMPLATE,
     MAX_RECORDS_PER_PAGE,
     SUPPORTED_SUFFIXES,
     TEMPLATE,
     UNSET_DIEN_FILTER,
     UPLOAD_DIR,
 )
+from quan_ly_ho_so.attachments import AttachmentError, document_pages
 from quan_ly_ho_so.errors import StaleWorkbookError
 from quan_ly_ho_so.forms.enums import NvqsStatus
 from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
@@ -34,13 +48,18 @@ from quan_ly_ho_so.utils.text import fold
 from quan_ly_ho_so.web.templates import PAGE, page_url, render_form, render_preview
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
+    add_record_files,
     database_record_count,
+    delete_record_file,
     find_record,
+    move_record_owner,
+    record_file_image,
     query_filter_options,
     query_records,
     set_record_type,
     signature_token,
 )
+from quan_ly_ho_so.workbook.list_export import build_list_workbook
 from quan_ly_ho_so.workbook.manager import (
     load_saved_workbook,
     native_workbook_dialog,
@@ -250,6 +269,10 @@ def save_person_route():
     nvqs_type = request.form.get("nvqs_type")
     if nvqs_type and nvqs_type not in NvqsStatus.__members__:
         validation_errors.append("Diện nghĩa vụ quân sự không hợp lệ.")
+    citizen_column = state["headers"].get("Căn cước")
+    citizen_id = values_by_column.get(citizen_column, "").strip() if citizen_column else ""
+    if nvqs_type and not citizen_id:
+        validation_errors.append("Hãy nhập số CCCD trước khi chọn Diện, vì Diện được lưu theo số CCCD.")
     is_preview = request.form.get("view") == "preview"
     render_page = render_preview if is_preview else render_form
     status_argument = {} if is_preview else {"nvqs_type": nvqs_type or ""}
@@ -262,8 +285,10 @@ def save_person_route():
         row, stt, backup = save_person(
             state["workbook"], state["sheet"], updates, request.form.get("signature", ""), original_stt=original_stt,
         )
-        if nvqs_type is not None:
-            set_record_type(state["workbook"], stt, nvqs_type)
+        if record is not None:
+            move_record_owner(state["workbook"], record["citizen_id"], citizen_id)
+        if nvqs_type is not None and citizen_id:
+            set_record_type(state["workbook"], citizen_id, nvqs_type)
         refresh_state(force=True)
         flash(f"Đã lưu hồ sơ STT {stt}. Bản sao lưu: {backup.name}", "success")
         return redirect(url_for("index"))
@@ -341,6 +366,117 @@ def generate_batch():
         return redirect(url_for("index"))
     state["last_output_dir"] = output_dir
     flash(f"Đã tạo tệp Word gộp cho {len(records)} hồ sơ: {output.name}.", "success")
+    return redirect(url_for("download", filename=output.name))
+
+
+def owner_citizen_id(stt):
+    """Resolve the record's CCCD, which is what app-owned data is filed under."""
+    record = find_record(stt)
+    return record["citizen_id"] if record else None
+
+
+@app.post("/person/<stt>/files")
+def upload_record_file(stt):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    citizen_id = owner_citizen_id(stt)
+    if citizen_id is None:
+        flash("Không tìm thấy hồ sơ. Hãy làm mới tệp Excel và thử lại.", "error")
+        return redirect(url_for("index"))
+    if not citizen_id:
+        flash("Hồ sơ chưa có số CCCD. Hãy nhập số CCCD và lưu hồ sơ trước khi thêm tài liệu.", "error")
+        return redirect(url_for("edit_person", stt=stt))
+    upload = request.files.get("document")
+    if upload is None or not upload.filename:
+        flash("Hãy chọn tệp tài liệu để tải lên.", "error")
+        return redirect(url_for("edit_person", stt=stt))
+    try:
+        pages = document_pages(upload.read(), upload.filename)
+        add_record_files(state["workbook"], citizen_id, secure_filename(upload.filename) or upload.filename, pages)
+    except AttachmentError as error:
+        flash(str(error), "error")
+        return redirect(url_for("edit_person", stt=stt))
+    except Exception as error:
+        logging.exception("Could not convert uploaded document: %s", error)
+        flash(f"Không thể chuyển tài liệu thành ảnh: {error}", "error")
+        return redirect(url_for("edit_person", stt=stt))
+    flash(f"Đã thêm {len(pages)} trang tài liệu vào hồ sơ liên quan.", "success")
+    return redirect(url_for("edit_person", stt=stt))
+
+
+@app.get("/person/<stt>/files/<int:file_id>")
+def record_file(stt, file_id):
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    citizen_id = owner_citizen_id(stt)
+    data = record_file_image(state["workbook"], citizen_id, file_id, thumbnail=request.args.get("size") == "thumb") if citizen_id else None
+    if data is None:
+        abort(404)
+    response = Response(data, mimetype="image/jpeg")
+    # Tag by content and force revalidation: the browser must never reuse the picture that a
+    # since-deleted document left behind at this address.
+    response.set_etag(hashlib.sha1(data).hexdigest())
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response.make_conditional(request)
+
+
+@app.post("/person/<stt>/files/<int:file_id>/delete")
+def remove_record_file(stt, file_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    citizen_id = owner_citizen_id(stt)
+    if citizen_id and delete_record_file(state["workbook"], citizen_id, file_id):
+        flash("Đã xóa một trang tài liệu khỏi hồ sơ liên quan.", "success")
+    else:
+        flash("Không tìm thấy trang tài liệu cần xóa.", "error")
+    return redirect(url_for("edit_person", stt=stt))
+
+
+@app.post("/export/batch")
+def export_batch_excel():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    selected_stt = request.form.getlist("stt")
+    if not selected_stt:
+        flash("Hãy chọn ít nhất một hồ sơ để tạo Excel hàng loạt.", "error")
+        return redirect(url_for("index"))
+    if not LIST_TEMPLATE.is_file():
+        flash(f"Không tìm thấy tệp mẫu {LIST_TEMPLATE.name} cạnh ứng dụng.", "error")
+        return redirect(url_for("index"))
+
+    records = []
+    missing = []
+    for stt in selected_stt:
+        record = find_record(stt)
+        (records if record is not None else missing).append(record if record is not None else stt)
+    if missing:
+        flash(f"Không tìm thấy hồ sơ STT: {', '.join(missing)}. Hãy làm mới tệp Excel và thử lại.", "error")
+        return redirect(url_for("index"))
+
+    output_dir = state["workbook"].parent / DEFAULT_OUTPUT_NAME
+    try:
+        listing = build_list_workbook(records, LIST_TEMPLATE)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        first_stt, last_stt = records[0]["stt"], records[-1]["stt"]
+        label = f"{first_stt}-{last_stt}" if first_stt != last_stt else first_stt
+        output = unique_output_path(output_dir, f"Danh sách thanh niên {label} ({len(records)} người)", suffix=".xlsx")
+        listing.save(output)
+    except Exception as error:
+        logging.exception("Could not export record list: %s", error)
+        flash(f"Không thể tạo tệp Excel hàng loạt: {error}", "error")
+        return redirect(url_for("index"))
+    state["last_output_dir"] = output_dir
+    flash(f"Đã tạo tệp Excel danh sách cho {len(records)} hồ sơ: {output.name}.", "success")
     return redirect(url_for("download", filename=output.name))
 
 
