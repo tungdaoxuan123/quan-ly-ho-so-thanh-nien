@@ -65,6 +65,10 @@ PAGE = r"""
     td.stt { color: var(--muted); font-variant-numeric: tabular-nums; } td.name { font-weight: 600; color: #12213d; } td.cccd { font-variant-numeric: tabular-nums; }
     td.actions-cell, th.actions-head { text-align: right; white-space: nowrap; } td.empty { text-align: center; color: var(--muted); padding: 40px 16px; }
     .table-hint { margin: 0; padding: 14px 20px; border-top: 1px solid var(--border); background: #f7f9fc; font-size: 13px; }
+    .selected-section { margin: 16px 0; } .selected-heading { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; } .selected-heading h2 { margin: 0; font-size: 15px; } .selected-heading button { padding: 5px 9px; }
+    .selected-list { list-style: none; padding: 0; margin: 0; max-height: 180px; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+    .selected-list li { display: inline-flex; gap: 3px; align-items: baseline; } .selected-list .selected-person { overflow-wrap: anywhere; }
+    .selected-list button, .selected-list button:hover { background: none; border: 0; color: var(--primary); padding: 0; font-size: 13px; font-weight: 500; text-decoration: underline; }
     .row-menu > summary { padding: 6px 12px; font-size: 13px; } .row-menu > summary::after { content: ""; width: 6px; height: 6px; margin-left: 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg) translateY(-2px); }
     .row-menu-list { position: fixed; z-index: 10; min-width: 160px; background: #fff; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 28px rgba(20,32,56,.18); padding: 5px; display: flex; flex-direction: column; text-align: left; }
     .row-menu-list a, .row-menu-list button { display: block; width: 100%; text-align: left; padding: 8px 12px; background: none; color: var(--text); border: 0; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; }
@@ -89,9 +93,10 @@ PAGE = r"""
       <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary><div class="filter-grid"><label>Năm sinh<select name="birth_year"><option value="">Tất cả</option>{% for value in options.birth_year %}<option value="{{ value }}" {% if filters.birth_year == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Nghề nghiệp<select name="occupation"><option value="">Tất cả</option>{% for value in options.occupation %}<option value="{{ value }}" {% if filters.occupation == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Trình độ văn hóa<select name="education"><option value="">Tất cả</option>{% for value in options.education %}<option value="{{ value }}" {% if filters.education == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Dân tộc<select name="ethnicity"><option value="">Tất cả</option>{% for value in options.ethnicity %}<option value="{{ value }}" {% if filters.ethnicity == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Tôn giáo<select name="religion"><option value="">Tất cả</option>{% for value in options.religion %}<option value="{{ value }}" {% if filters.religion == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Diện<select name="dien"><option value="">Tất cả</option><option value="{{ unset_dien }}" {% if filters.dien == unset_dien %}selected{% endif %}>&lt;chưa có&gt;</option>{% for code, text in dien_options %}<option value="{{ code }}" {% if filters.dien == code %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label><label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
     </form>
     <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+    <section class="selected-section" id="selected-panel" aria-labelledby="selected-heading" hidden><div class="selected-heading"><h2 id="selected-heading">Hồ sơ đã chọn (<span id="selected-total">0</span>)</h2><span class="muted">Lựa chọn được giữ lại khi lọc hoặc đổi trang.</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button></div><ul class="selected-list" id="selected-list"></ul></section>
     <section class="card table-card">
-      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button></div></div>
-      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="8" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
+      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button></div></div>
+      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="8" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
       <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.</p>
     </section>
     {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
@@ -104,15 +109,43 @@ PAGE = r"""
       const batchForm = document.getElementById('batch-form');
       let savedSelection = [];
       try { savedSelection = JSON.parse(sessionStorage.getItem(selectionKey) || '[]'); } catch (error) { savedSelection = []; }
-      const selectedStt = new Set(Array.isArray(savedSelection) ? savedSelection.filter(function(value){ return typeof value === 'string'; }) : []);
+      const selectedRecords = new Map();
+      if (Array.isArray(savedSelection)) savedSelection.forEach(function(item){
+        if (typeof item === 'string') selectedRecords.set(item, '');
+        else if (item && typeof item.stt === 'string') selectedRecords.set(item.stt, typeof item.name === 'string' ? item.name : '');
+      });
       function saveSelection() {
         try {
-          if (selectedStt.size) sessionStorage.setItem(selectionKey, JSON.stringify(Array.from(selectedStt)));
+          if (selectedRecords.size) sessionStorage.setItem(selectionKey, JSON.stringify(Array.from(selectedRecords, function(entry){ return {stt: entry[0], name: entry[1]}; })));
           else sessionStorage.removeItem(selectionKey);
         } catch (error) { console.warn('Không thể lưu lựa chọn hồ sơ', error); }
       }
+      function renderSelectedRecords() {
+        const panel = document.getElementById('selected-panel');
+        const list = document.getElementById('selected-list');
+        const items = document.createDocumentFragment();
+        selectedRecords.forEach(function(name, stt){
+          const item = document.createElement('li');
+          const person = document.createElement('span');
+          person.className = 'selected-person';
+          person.textContent = name ? 'STT ' + stt + ' · ' + name : 'STT ' + stt;
+          const remove = document.createElement('button');
+          remove.type = 'button'; remove.textContent = 'Bỏ chọn';
+          remove.setAttribute('aria-label', 'Bỏ chọn hồ sơ ' + stt + (name ? ' ' + name : ''));
+          remove.addEventListener('click', function(){
+            selectedRecords.delete(stt);
+            rowCheckboxes.forEach(function(box){ if (box.value === stt) box.checked = false; });
+            saveSelection(); updateSelection();
+          });
+          item.append(person, remove);
+          items.appendChild(item);
+        });
+        list.replaceChildren(items);
+        panel.hidden = !selectedRecords.size;
+        document.getElementById('selected-total').textContent = selectedRecords.size;
+      }
       function updateSelection() {
-        const count = selectedStt.size;
+        const count = selectedRecords.size;
         document.getElementById('selected-count').textContent = count ? 'Đã chọn ' + count + ' hồ sơ' : 'Chưa chọn hồ sơ';
         document.getElementById('batch-btn').disabled = !count;
         document.getElementById('clear-selection').disabled = !count;
@@ -120,32 +153,35 @@ PAGE = r"""
         selectAll.disabled = !rowCheckboxes.length;
         selectAll.checked = !!rowCheckboxes.length && visibleSelected === rowCheckboxes.length;
         selectAll.indeterminate = visibleSelected > 0 && visibleSelected < rowCheckboxes.length;
+        renderSelectedRecords();
       }
       rowCheckboxes.forEach(function(box){
-        box.checked = selectedStt.has(box.value);
+        box.checked = selectedRecords.has(box.value);
+        if (box.checked) selectedRecords.set(box.value, box.dataset.name || '');
         box.addEventListener('change', function(){
-          if (box.checked) selectedStt.add(box.value);
-          else selectedStt.delete(box.value);
+          if (box.checked) selectedRecords.set(box.value, box.dataset.name || '');
+          else selectedRecords.delete(box.value);
           saveSelection(); updateSelection();
         });
       });
+      if (selectedRecords.size) saveSelection();
       selectAll.addEventListener('change', function(){
         rowCheckboxes.forEach(function(box){
           box.checked = selectAll.checked;
-          if (box.checked) selectedStt.add(box.value);
-          else selectedStt.delete(box.value);
+          if (box.checked) selectedRecords.set(box.value, box.dataset.name || '');
+          else selectedRecords.delete(box.value);
         });
         saveSelection(); updateSelection();
       });
       document.getElementById('clear-selection').addEventListener('click', function(){
-        selectedStt.clear();
+        selectedRecords.clear();
         rowCheckboxes.forEach(function(box){ box.checked = false; });
         saveSelection(); updateSelection();
       });
       batchForm.addEventListener('submit', function(){
         batchForm.querySelectorAll('.saved-selection').forEach(function(input){ input.remove(); });
         const visibleStt = new Set(rowCheckboxes.filter(function(box){ return box.checked; }).map(function(box){ return box.value; }));
-        selectedStt.forEach(function(stt){
+        selectedRecords.forEach(function(name, stt){
           if (visibleStt.has(stt)) return;
           const input = document.createElement('input');
           input.type = 'hidden'; input.name = 'stt'; input.value = stt; input.className = 'saved-selection';
