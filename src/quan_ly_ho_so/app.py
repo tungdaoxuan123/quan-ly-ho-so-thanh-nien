@@ -112,6 +112,7 @@ def index():
         read_only=state["workbook"].suffix.lower() == ".xlsm",
         dien_options=NvqsStatus.options(),
         unset_dien=UNSET_DIEN_FILTER,
+        selection_scope=f"{state['workbook']}:{state['sheet']}",
     )
 
 

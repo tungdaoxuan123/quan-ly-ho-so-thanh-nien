@@ -57,7 +57,7 @@ PAGE = r"""
     details.advanced > summary, .row-menu > summary { list-style: none; } details.advanced > summary::-webkit-details-marker, .row-menu > summary::-webkit-details-marker { display: none; }
     details.advanced > summary { color: var(--primary); font-weight: 600; } details.advanced > summary::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 9px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform .15s; } details.advanced[open] > summary::before { transform: rotate(45deg) translate(-2px, -2px); }
     .table-card { padding: 0; overflow: hidden; }
-    .table-toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); } .batch { display: flex; gap: 14px; align-items: center; }
+    .table-toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--border); } .batch { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
     .table-wrap { overflow-x: auto; } table { width: 100%; min-width: 820px; border-collapse: collapse; }
     th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid #edf0f5; vertical-align: middle; }
     th { color: #4a5872; background: #f7f9fc; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
@@ -90,7 +90,7 @@ PAGE = r"""
     </form>
     <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
     <section class="card table-card">
-      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button></div></div>
+      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button></div></div>
       <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="8" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
       <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.</p>
     </section>
@@ -98,9 +98,60 @@ PAGE = r"""
     <script>
       function positionRowMenu(d) { if (!d.open) return; document.querySelectorAll('.row-menu[open]').forEach(function(o){ if (o !== d) o.open = false; }); var r = d.getBoundingClientRect(), m = d.querySelector('.row-menu-list'); m.style.left = r.left + 'px'; m.style.top = (r.bottom + 4) + 'px'; }
       document.addEventListener('click', function(e){ document.querySelectorAll('.row-menu[open]').forEach(function(o){ if (!o.contains(e.target)) o.open = false; }); });
-      function updateSelection() { var n = document.querySelectorAll('.row-select:checked').length; document.getElementById('selected-count').textContent = n ? 'Đã chọn ' + n + ' hồ sơ' : 'Chưa chọn hồ sơ'; document.getElementById('batch-btn').disabled = !n; }
-      document.getElementById('select-all').addEventListener('change', function(){ var on = this.checked; document.querySelectorAll('.row-select').forEach(function(b){ b.checked = on; }); updateSelection(); });
-      document.querySelectorAll('.row-select').forEach(function(b){ b.addEventListener('change', updateSelection); });
+      const selectionKey = 'qlhs:batch:' + {{ selection_scope|tojson }};
+      const rowCheckboxes = Array.from(document.querySelectorAll('.row-select'));
+      const selectAll = document.getElementById('select-all');
+      const batchForm = document.getElementById('batch-form');
+      let savedSelection = [];
+      try { savedSelection = JSON.parse(sessionStorage.getItem(selectionKey) || '[]'); } catch (error) { savedSelection = []; }
+      const selectedStt = new Set(Array.isArray(savedSelection) ? savedSelection.filter(function(value){ return typeof value === 'string'; }) : []);
+      function saveSelection() {
+        try {
+          if (selectedStt.size) sessionStorage.setItem(selectionKey, JSON.stringify(Array.from(selectedStt)));
+          else sessionStorage.removeItem(selectionKey);
+        } catch (error) { console.warn('Không thể lưu lựa chọn hồ sơ', error); }
+      }
+      function updateSelection() {
+        const count = selectedStt.size;
+        document.getElementById('selected-count').textContent = count ? 'Đã chọn ' + count + ' hồ sơ' : 'Chưa chọn hồ sơ';
+        document.getElementById('batch-btn').disabled = !count;
+        document.getElementById('clear-selection').disabled = !count;
+        const visibleSelected = rowCheckboxes.filter(function(box){ return box.checked; }).length;
+        selectAll.disabled = !rowCheckboxes.length;
+        selectAll.checked = !!rowCheckboxes.length && visibleSelected === rowCheckboxes.length;
+        selectAll.indeterminate = visibleSelected > 0 && visibleSelected < rowCheckboxes.length;
+      }
+      rowCheckboxes.forEach(function(box){
+        box.checked = selectedStt.has(box.value);
+        box.addEventListener('change', function(){
+          if (box.checked) selectedStt.add(box.value);
+          else selectedStt.delete(box.value);
+          saveSelection(); updateSelection();
+        });
+      });
+      selectAll.addEventListener('change', function(){
+        rowCheckboxes.forEach(function(box){
+          box.checked = selectAll.checked;
+          if (box.checked) selectedStt.add(box.value);
+          else selectedStt.delete(box.value);
+        });
+        saveSelection(); updateSelection();
+      });
+      document.getElementById('clear-selection').addEventListener('click', function(){
+        selectedStt.clear();
+        rowCheckboxes.forEach(function(box){ box.checked = false; });
+        saveSelection(); updateSelection();
+      });
+      batchForm.addEventListener('submit', function(){
+        batchForm.querySelectorAll('.saved-selection').forEach(function(input){ input.remove(); });
+        const visibleStt = new Set(rowCheckboxes.filter(function(box){ return box.checked; }).map(function(box){ return box.value; }));
+        selectedStt.forEach(function(stt){
+          if (visibleStt.has(stt)) return;
+          const input = document.createElement('input');
+          input.type = 'hidden'; input.name = 'stt'; input.value = stt; input.className = 'saved-selection';
+          batchForm.appendChild(input);
+        });
+      });
       updateSelection();
       window.addEventListener('scroll', function(){ document.querySelectorAll('.row-menu[open]').forEach(function(o){ o.open = false; }); }, true);
     </script>
