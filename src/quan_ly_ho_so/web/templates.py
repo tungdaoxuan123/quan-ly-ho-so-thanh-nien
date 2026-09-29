@@ -7,6 +7,12 @@ from quan_ly_ho_so.forms.fields import field_definitions, form_values
 from quan_ly_ho_so.security import csrf_token
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
+from quan_ly_ho_so.web.auth_templates import (
+    ADMIN_PAGE,
+    FORCE_CHANGE_PASSWORD_PAGE,
+    LOGIN_PAGE,
+    PROFILE_PAGE,
+)
 from quan_ly_ho_so.workbook.cache import signature_token
 
 PAGE = r"""
@@ -26,37 +32,132 @@ PAGE = r"""
     .search-row, .filter-grid { display: grid; gap: 12px; } .search-row { grid-template-columns: minmax(260px, 1fr) auto auto; align-items: end; } .filter-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 14px; }
     label { display: flex; flex-direction: column; gap: 5px; font-weight: 600; } input, select, textarea, button { box-sizing: border-box; font: inherit; border-radius: 7px; border: 1px solid #bdc9d9; padding: 10px 11px; }
     input, select, textarea { background: #fff; width: 100%; } button, .button { background: #1e5b91; border: 0; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; padding: 10px 13px; border-radius: 7px; white-space: nowrap; }
-    button.secondary, .button.secondary { color: #1e5b91; background: #e9f1f8; } .notice { padding: 12px 14px; border-radius: 8px; background: #e9f4eb; color: #265b31; } .notice.error { background: #fdecec; color: #8f2f2f; }
+    button.secondary, .button.secondary { color: #1e5b91; background: #e9f1f8; }
+    button.danger, .button.danger { background: #fdecec; color: #8f2f2f; border: 1px solid #f5c6cb; }
+    button.danger:hover, .button.danger:hover { background: #f8d7da; }
+    .notice { padding: 12px 14px; border-radius: 8px; background: #e9f4eb; color: #265b31; } .notice.error { background: #fdecec; color: #8f2f2f; }
     details.advanced { border-top: 1px solid #e4e9f0; margin-top: 18px; padding-top: 14px; } summary { cursor: pointer; color: #1e5b91; font-weight: 700; }
     .table-wrap { overflow-x: auto; margin-top: 14px; } table { width: 100%; min-width: 800px; border-collapse: collapse; background: #fff; } th, td { text-align: left; padding: 11px; border-bottom: 1px solid #e4e9f0; vertical-align: top; }
     th { color: #344a66; background: #eef3f8; } td.actions-cell { white-space: nowrap; } .inline-form { display: inline; }
-    .pagination { margin-top: 16px; } @media (max-width: 700px) { body { padding: 14px; } .search-row { grid-template-columns: 1fr; } .search-row button, .search-row .button { text-align: center; } }
+    .pagination { margin-top: 16px; }
+    .user-nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .user-info { font-size: 14px; color: #344a66; }
+    .role-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; margin-left: 4px; }
+    .role-badge.admin { background: #e0edff; color: #163d68; border: 1px solid #b8d5ff; }
+    .role-badge.user { background: #eaf5ea; color: #23632f; border: 1px solid #c2e3c5; }
+    @media (max-width: 700px) { body { padding: 14px; } .search-row { grid-template-columns: 1fr; } .search-row button, .search-row .button { text-align: center; } }
   </style>
 </head>
 <body>
-  <header class="app-header"><div><h1>Quản lý hồ sơ thanh niên</h1><p class="muted">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</p></div></header>
-  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ 'error' if category == 'error' else '' }}">{{ message }}</p>{% endfor %}{% endwith %}
+  <header class="app-header">
+    <div>
+      <h1>Quản lý hồ sơ thanh niên</h1>
+      <p class="muted">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</p>
+    </div>
+    {% if current_user %}
+    <div class="user-nav">
+      <span class="user-info">Xin chào, <strong>{{ current_user.username }}</strong>
+        {% if current_user.is_admin %}
+          <span class="role-badge admin">Quản trị viên</span>
+        {% else %}
+          <span class="role-badge user">Người dùng</span>
+        {% endif %}
+      </span>
+      <a class="button secondary" href="{{ url_for('user_profile') }}">Tài khoản & Quyền hạn</a>
+      {% if current_user.is_admin %}
+        <a class="button secondary" href="{{ url_for('admin_dashboard') }}">Quản trị người dùng</a>
+      {% endif %}
+      <a class="button secondary" href="{{ url_for('logout') }}">Đăng xuất</a>
+    </div>
+    {% endif %}
+  </header>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <p class="notice {{ 'error' if category == 'error' else '' }}">{{ message }}</p>
+    {% endfor %}
+  {% endwith %}
   {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
   {% if not loaded %}
     <section class="card"><h2>Chọn tệp Excel</h2><p>Chọn tệp Excel gốc để ứng dụng đọc trực tiếp. Thay đổi đã lưu trong Excel sẽ xuất hiện sau khi làm mới.</p><div class="actions"><a class="button" href="{{ url_for('choose_workbook') }}">Chọn tệp Excel</a></div>
       <details class="advanced"><summary>Hoặc tải lên bản sao tệp Excel</summary><form class="panel" action="{{ url_for('load_uploaded_workbook') }}" method="post" enctype="multipart/form-data"><label>Tệp Excel<input type="file" name="workbook" accept=".xlsx,.xlsm" required></label><p><button type="submit">Dùng bản sao đã tải lên</button></p></form></details>
     </section>
   {% else %}
-    <section class="card summary"><div><strong>{{ workbook_name }}</strong><div class="status">Trang tính: {{ sheet_name }} · {{ record_count }} hồ sơ · Đồng bộ SQLite lúc {{ loaded_at }}</div></div><div class="actions"><a class="button secondary" href="{{ url_for('refresh') }}">Làm mới</a><a class="button secondary" href="{{ url_for('open_excel') }}">Mở bằng Excel</a><a class="button" href="{{ url_for('new_person') }}">Thêm hồ sơ</a><a class="button secondary" href="{{ url_for('choose_workbook') }}">Đổi tệp Excel</a><button type="submit" form="batch-form">Tạo Word hàng loạt (đã chọn)</button></div></section>
+    <section class="card summary">
+      <div>
+        <strong>{{ workbook_name }}</strong>
+        <div class="status">Trang tính: {{ sheet_name }} · {{ record_count }} hồ sơ · Đồng bộ SQLite lúc {{ loaded_at }}</div>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="{{ url_for('refresh') }}">Làm mới</a>
+        <a class="button secondary" href="{{ url_for('open_excel') }}">Mở bằng Excel</a>
+        {% if current_user and current_user.can_create %}
+          <a class="button" href="{{ url_for('new_person') }}">Thêm hồ sơ</a>
+        {% endif %}
+        <a class="button secondary" href="{{ url_for('choose_workbook') }}">Đổi tệp Excel</a>
+        {% if current_user and current_user.can_read %}
+          <button type="submit" form="batch-form">Tạo Word hàng loạt (đã chọn)</button>
+        {% endif %}
+      </div>
+    </section>
     {% if read_only %}<p class="notice">Tệp .xlsm chỉ có thể xem và tạo Word trong ứng dụng. Hãy dùng Excel để lưu thay đổi.</p>{% endif %}
-    <form class="card quick-search" action="{{ url_for('index') }}" method="get"><h2>Tìm kiếm hồ sơ</h2><div class="search-row"><label>Họ tên, STT hoặc CCCD<input name="q" value="{{ query }}" placeholder="Ví dụ: Nguyễn, 12 hoặc số CCCD" autofocus></label><button type="submit">Tìm kiếm</button><a class="button secondary" href="{{ url_for('index') }}">Xóa tìm kiếm</a></div>
-      <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary><div class="filter-grid"><label>Năm sinh<select name="birth_year"><option value="">Tất cả</option>{% for value in options.birth_year %}<option value="{{ value }}" {% if filters.birth_year == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Nghề nghiệp<select name="occupation"><option value="">Tất cả</option>{% for value in options.occupation %}<option value="{{ value }}" {% if filters.occupation == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Trình độ văn hóa<select name="education"><option value="">Tất cả</option>{% for value in options.education %}<option value="{{ value }}" {% if filters.education == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Dân tộc<select name="ethnicity"><option value="">Tất cả</option>{% for value in options.ethnicity %}<option value="{{ value }}" {% if filters.ethnicity == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Tôn giáo<select name="religion"><option value="">Tất cả</option>{% for value in options.religion %}<option value="{{ value }}" {% if filters.religion == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
-    </form>
-    <div class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</div>
-    <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
-    <div class="table-wrap"><table><thead><tr><th><input type="checkbox" onclick="document.querySelectorAll('.row-select').forEach(function(box){box.checked=this.checked;}, this)"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" form="batch-form"></td><td>{{ record.stt }}</td><td>{{ record.name }}</td><td>{{ record.birth_year }}</td><td>{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td class="actions-cell"><a class="button secondary" href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a> <a class="button secondary" href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a> <form class="inline-form" action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></td></tr>{% else %}<tr><td colspan="7">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
-    <p class="muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.</p>
-    {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
+    {% if current_user and not current_user.can_read %}
+      <section class="card">
+        <h2>Không có quyền xem dữ liệu</h2>
+        <p class="notice error">Tài khoản của bạn chưa được cấp quyền xem dữ liệu hồ sơ. Vui lòng liên hệ Quản trị viên để được cấp quyền.</p>
+      </section>
+    {% else %}
+      <form class="card quick-search" action="{{ url_for('index') }}" method="get"><h2>Tìm kiếm hồ sơ</h2><div class="search-row"><label>Họ tên, STT hoặc CCCD<input name="q" value="{{ query }}" placeholder="Ví dụ: Nguyễn, 12 hoặc số CCCD" autofocus></label><button type="submit">Tìm kiếm</button><a class="button secondary" href="{{ url_for('index') }}">Xóa tìm kiếm</a></div>
+        <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary><div class="filter-grid"><label>Năm sinh<select name="birth_year"><option value="">Tất cả</option>{% for value in options.birth_year %}<option value="{{ value }}" {% if filters.birth_year == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Nghề nghiệp<select name="occupation"><option value="">Tất cả</option>{% for value in options.occupation %}<option value="{{ value }}" {% if filters.occupation == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Trình độ văn hóa<select name="education"><option value="">Tất cả</option>{% for value in options.education %}<option value="{{ value }}" {% if filters.education == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Dân tộc<select name="ethnicity"><option value="">Tất cả</option>{% for value in options.ethnicity %}<option value="{{ value }}" {% if filters.ethnicity == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Tôn giáo<select name="religion"><option value="">Tất cả</option>{% for value in options.religion %}<option value="{{ value }}" {% if filters.religion == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
+      </form>
+      <div class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</div>
+      <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th><input type="checkbox" onclick="document.querySelectorAll('.row-select').forEach(function(box){box.checked=this.checked;}, this)"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Thao tác</th></tr></thead>
+          <tbody>
+            {% for record in records %}
+            <tr>
+              <td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" form="batch-form"></td>
+              <td>{{ record.stt }}</td>
+              <td>{{ record.name }}</td>
+              <td>{{ record.birth_year }}</td>
+              <td>{{ record.citizen_id }}</td>
+              <td>{{ record.occupation }}</td>
+              <td class="actions-cell">
+                {% if current_user and current_user.can_update %}
+                  <a class="button secondary" href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a>
+                {% endif %}
+                {% if current_user and current_user.can_read %}
+                  <a class="button secondary" href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a>
+                  <form class="inline-form" action="{{ url_for('generate', stt=record.stt) }}" method="post">
+                    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                    <button type="submit">Tạo Word</button>
+                  </form>
+                {% endif %}
+                {% if current_user and current_user.can_delete %}
+                  <form class="inline-form" action="{{ url_for('delete_person_route', stt=record.stt) }}" method="post" onsubmit="return confirm('Bạn có chắc chắn muốn xóa hồ sơ STT {{ record.stt }} - {{ record.name }}?');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+                    <input type="hidden" name="signature" value="{{ signature }}">
+                    <button type="submit" class="button danger">Xóa</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7">Không tìm thấy hồ sơ phù hợp.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.</p>
+      {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
+    {% endif %}
     <script>const currentSignature = {{ signature|tojson }}; setInterval(async () => { try { const response = await fetch({{ url_for('api_status')|tojson }}, {cache: 'no-store'}); const status = await response.json(); if (status.signature && currentSignature && status.signature !== currentSignature) window.location.reload(); } catch (error) { console.warn('Không thể kiểm tra thay đổi tệp Excel', error); } }, 5000);</script>
   {% endif %}
 </body>
 </html>
 """
+
 
 
 FORM_PAGE = r"""

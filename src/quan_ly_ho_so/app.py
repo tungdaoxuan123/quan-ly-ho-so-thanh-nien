@@ -12,9 +12,32 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, flash, jsonify, redirect, render_template_string, request, send_from_directory, url_for
+from datetime import timedelta
+
+from flask import Flask, flash, jsonify, redirect, render_template_string, request, send_from_directory, session, url_for
+from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
+from quan_ly_ho_so.auth import (
+    DEFAULT_SESSION_LIFETIME_DAYS,
+    DEFAULT_USER_PASSWORD,
+    admin_required,
+    auth_database_connection,
+    auth_required,
+    authenticate,
+    create_user,
+    current_user,
+    delete_user,
+    get_persistent_secret_key,
+    get_user_by_id,
+    list_users,
+    login_required,
+    login_user,
+    logout_user,
+    permission_required,
+    reset_user_password,
+    update_user,
+)
 from quan_ly_ho_so.config import (
     DEFAULT_OUTPUT_NAME,
     FILTER_DB_COLUMNS,
@@ -29,7 +52,16 @@ from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, val
 from quan_ly_ho_so.security import csrf_token, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
-from quan_ly_ho_so.web.templates import PAGE, page_url, render_form, render_preview
+from quan_ly_ho_so.web.templates import (
+    ADMIN_PAGE,
+    FORCE_CHANGE_PASSWORD_PAGE,
+    LOGIN_PAGE,
+    PAGE,
+    PROFILE_PAGE,
+    page_url,
+    render_form,
+    render_preview,
+)
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
     database_record_count,
@@ -44,19 +76,330 @@ from quan_ly_ho_so.workbook.manager import (
     refresh_state,
     set_workbook,
 )
-from quan_ly_ho_so.workbook.writer import save_person
+from quan_ly_ho_so.workbook.writer import delete_person, save_person
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("QUAN_LY_HO_SO_SECRET") or secrets.token_hex(32)
+app.secret_key = get_persistent_secret_key()
+app.permanent_session_lifetime = timedelta(days=DEFAULT_SESSION_LIFETIME_DAYS)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
+@app.context_processor
+def inject_user():
+    return {"current_user": current_user()}
+
+
+@app.before_request
+def require_authentication():
+    exempt_endpoints = {"login", "login_post", "logout", "static"}
+    if request.endpoint in exempt_endpoints or request.endpoint is None:
+        return None
+    user = current_user()
+    if not user:
+        if request.method == "GET":
+            next_url = request.full_path if request.query_string else request.path
+            return redirect(url_for("login", next=next_url))
+        return redirect(url_for("login"))
+
+    force_endpoints = {"force_change_password", "force_change_password_post", "logout"}
+    if user.get("must_change_password") and request.endpoint not in force_endpoints:
+        return redirect(url_for("force_change_password"))
+
+
+@app.get("/login")
+def login():
+    if current_user():
+        return redirect(url_for("index"))
+    next_url = request.args.get("next", "")
+    return render_template_string(
+        LOGIN_PAGE,
+        csrf=csrf_token(),
+        next_url=next_url,
+        username="",
+    )
+
+
+@app.post("/login")
+def login_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử đăng nhập lại.", "error")
+        return redirect(url_for("login"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    next_url = request.form.get("next", "")
+    user = authenticate(username, password)
+    if user is None:
+        flash("Tên đăng nhập hoặc mật khẩu không chính xác.", "error")
+        return render_template_string(
+            LOGIN_PAGE,
+            csrf=csrf_token(),
+            next_url=next_url,
+            username=username,
+        )
+    login_user(user)
+    if user.get("must_change_password"):
+        flash("Đây là lần đầu đăng nhập hoặc mật khẩu vừa được đặt lại. Vui lòng tự cài đặt mật khẩu mới.", "error")
+        return redirect(url_for("force_change_password"))
+    flash(f"Đăng nhập thành công. Xin chào {user['username']}!", "success")
+    if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+        return redirect(next_url)
+    return redirect(url_for("index"))
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    logout_user()
+    flash("Đã đăng xuất khỏi hệ thống.", "success")
+    return redirect(url_for("login"))
+
+
+@app.get("/force-change-password")
+@auth_required
+def force_change_password():
+    user = current_user()
+    if not user or not user.get("must_change_password"):
+        return redirect(url_for("index"))
+    return render_template_string(
+        FORCE_CHANGE_PASSWORD_PAGE,
+        csrf=csrf_token(),
+        username=user["username"],
+    )
+
+
+@app.post("/force-change-password")
+@auth_required
+def force_change_password_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("force_change_password"))
+    user = current_user()
+    if not user:
+        return redirect(url_for("login"))
+    new_pw = request.form.get("new_password", "").strip()
+    confirm_pw = request.form.get("confirm_password", "").strip()
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    try:
+        update_user(user["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Cài đặt mật khẩu mới thành công! Bạn có thể bắt đầu sử dụng hệ thống.", "success")
+        return redirect(url_for("index"))
+    except Exception as error:
+        flash(f"Không thể cập nhật mật khẩu: {error}", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+
+
+@app.get("/profile")
+@auth_required
+def user_profile():
+    user_info = current_user()
+    user_db = get_user_by_id(user_info["id"])
+    return render_template_string(
+        PROFILE_PAGE,
+        user=user_db or user_info,
+        current_user=user_info,
+        csrf=csrf_token(),
+    )
+
+
+@app.post("/profile/change-password")
+@auth_required
+def profile_change_password():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("user_profile"))
+    user_info = current_user()
+    user_db = get_user_by_id(user_info["id"])
+    current_pw = request.form.get("current_password", "")
+    new_pw = request.form.get("new_password", "").strip()
+    confirm_pw = request.form.get("confirm_password", "").strip()
+    if not user_db or not check_password_hash(user_db["password_hash"], current_pw):
+        flash("Mật khẩu hiện tại không chính xác.", "error")
+        return redirect(url_for("user_profile"))
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return redirect(url_for("user_profile"))
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return redirect(url_for("user_profile"))
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return redirect(url_for("user_profile"))
+    try:
+        update_user(user_info["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Đổi mật khẩu thành công!", "success")
+    except Exception as error:
+        flash(f"Không thể đổi mật khẩu: {error}", "error")
+    return redirect(url_for("user_profile"))
+
+
+@app.get("/admin")
+@auth_required(role="admin")
+def admin_dashboard():
+    users = list_users()
+    admin_user = next((u for u in users if u["role"] == "admin"), None)
+    return render_template_string(
+        ADMIN_PAGE,
+        users=users,
+        admin_user=admin_user,
+        csrf=csrf_token(),
+        current_user=current_user(),
+    )
+
+
+@app.post("/admin/users/create")
+@auth_required(role="admin")
+def admin_create_user():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    username = request.form.get("username", "").strip()
+    can_create = bool(request.form.get("can_create"))
+    can_read = bool(request.form.get("can_read"))
+    can_update = bool(request.form.get("can_update"))
+    can_delete = bool(request.form.get("can_delete"))
+    try:
+        create_user(
+            username,
+            password=DEFAULT_USER_PASSWORD,
+            can_create=can_create,
+            can_read=can_read,
+            can_update=can_update,
+            can_delete=can_delete,
+            must_change_password=True,
+        )
+        flash(f"Đã tạo người dùng '{username}' thành công (mật khẩu mặc định: '{DEFAULT_USER_PASSWORD}'). Người dùng sẽ phải tự cài mật khẩu mới khi đăng nhập lần đầu.", "success")
+    except Exception as error:
+        flash(f"Không thể tạo người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/update")
+@auth_required(role="admin")
+def admin_update_user(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    can_create = bool(request.form.get("can_create"))
+    can_read = bool(request.form.get("can_read"))
+    can_update = bool(request.form.get("can_update"))
+    can_delete = bool(request.form.get("can_delete"))
+    try:
+        updated = update_user(
+            user_id,
+            password=None,
+            can_create=can_create,
+            can_read=can_read,
+            can_update=can_update,
+            can_delete=can_delete,
+        )
+        flash(f"Đã cập nhật quyền người dùng '{updated['username']}' thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể cập nhật người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/reset-password")
+@auth_required(role="admin")
+def admin_reset_user_password(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        updated = reset_user_password(user_id)
+        flash(f"Đã đặt lại mật khẩu cho người dùng '{updated['username']}' về mặc định ('{DEFAULT_USER_PASSWORD}'). Người dùng sẽ bắt buộc phải tự cài đặt mật khẩu mới khi đăng nhập.", "success")
+    except Exception as error:
+        flash(f"Không thể đặt lại mật khẩu: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/delete")
+@auth_required(role="admin")
+def admin_delete_user(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        delete_user(user_id)
+        flash("Đã xóa người dùng thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể xóa người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/change-password")
+@auth_required(role="admin")
+def admin_change_password():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    current_user_obj = current_user()
+    admin_record = get_user_by_id(current_user_obj["id"])
+    current_pw = request.form.get("current_password", "")
+    new_pw = request.form.get("new_password", "")
+    confirm_pw = request.form.get("confirm_password", "")
+    if not admin_record or not check_password_hash(admin_record["password_hash"], current_pw):
+        flash("Mật khẩu hiện tại không chính xác.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        update_user(current_user_obj["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Đã đổi mật khẩu Quản trị viên thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể đổi mật khẩu: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
 @app.get("/")
+@auth_required
 def index():
     refresh_state()
+    user = current_user()
     if state["workbook"] is None:
-        return render_template_string(PAGE, loaded=False, error=state["error"], csrf=csrf_token())
+        return render_template_string(PAGE, loaded=False, error=state["error"], csrf=csrf_token(), current_user=user)
+    if not user.get("can_read"):
+        return render_template_string(
+            PAGE,
+            loaded=True,
+            error=state["error"],
+            workbook_name=state["workbook"].name,
+            sheet_name=state["sheet"],
+            record_count=state["record_count"],
+            loaded_at=state["loaded_at"].strftime("%Y-%m-%d %H:%M:%S") if state["loaded_at"] else "",
+            records=[],
+            filtered_count=0,
+            shown_start=0,
+            shown_end=0,
+            page=1,
+            pages=1,
+            page_urls={},
+            query="",
+            filters={},
+            filters_active=False,
+            options={},
+            signature=signature_token(state["signature"]),
+            csrf=csrf_token(),
+            read_only=state["workbook"].suffix.lower() == ".xlsm",
+            current_user=user,
+        )
     query = request.args.get("q", "").strip()
     filters = {
         "birth_year": request.args.get("birth_year", "").strip(),
@@ -104,10 +447,12 @@ def index():
         signature=signature_token(state["signature"]),
         csrf=csrf_token(),
         read_only=state["workbook"].suffix.lower() == ".xlsm",
+        current_user=user,
     )
 
 
 @app.get("/api/status")
+@auth_required
 def api_status():
     refresh_state()
     return jsonify({
@@ -119,6 +464,7 @@ def api_status():
 
 
 @app.get("/refresh")
+@auth_required
 def refresh():
     refresh_state(force=True)
     if state["error"]:
@@ -129,6 +475,7 @@ def refresh():
 
 
 @app.get("/choose")
+@auth_required
 def choose_workbook():
     selected = native_workbook_dialog()
     if selected is None:
@@ -144,6 +491,7 @@ def choose_workbook():
 
 
 @app.post("/load")
+@auth_required
 def load_uploaded_workbook():
     upload = request.files.get("workbook")
     if upload is None or not upload.filename:
@@ -166,6 +514,7 @@ def load_uploaded_workbook():
 
 
 @app.get("/open-excel")
+@auth_required
 def open_excel():
     if state["workbook"] is None:
         return redirect(url_for("index"))
@@ -183,6 +532,7 @@ def open_excel():
 
 
 @app.get("/person/new")
+@auth_required(permission="create")
 def new_person():
     refresh_state()
     if state["workbook"] is None:
@@ -191,6 +541,7 @@ def new_person():
 
 
 @app.get("/person/<stt>/edit")
+@auth_required(permission="update")
 def edit_person(stt):
     refresh_state()
     record = find_record(stt)
@@ -201,6 +552,7 @@ def edit_person(stt):
 
 
 @app.get("/person/new/preview")
+@auth_required(permission="create")
 def new_person_preview():
     refresh_state()
     if state["workbook"] is None:
@@ -209,6 +561,7 @@ def new_person_preview():
 
 
 @app.get("/person/<stt>/preview")
+@auth_required(permission="read")
 def preview_person(stt):
     refresh_state()
     record = find_record(stt)
@@ -219,15 +572,23 @@ def preview_person(stt):
 
 
 @app.post("/person/save")
+@auth_required
 def save_person_route():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Biểu mẫu đã hết hạn. Hãy mở lại biểu mẫu.", "error")
         return redirect(url_for("index"))
     if state["workbook"] is None:
         return redirect(url_for("index"))
+    user = current_user()
     definitions = field_definitions()
     values = {definition["name"]: request.form.get(definition["name"], "") for definition in definitions}
     original_stt = request.form.get("original_stt", "").strip() or None
+    if original_stt and not user.get("can_update"):
+        flash("Bạn không có quyền chỉnh sửa hồ sơ.", "error")
+        return redirect(url_for("index"))
+    if not original_stt and not user.get("can_create"):
+        flash("Bạn không có quyền thêm mới hồ sơ.", "error")
+        return redirect(url_for("index"))
     values_by_column = {definition["column"]: values[definition["name"]] for definition in definitions}
     values_for_validation = {column: raw for column, raw in values_by_column.items()}
     values_for_validation["__original_stt"] = original_stt or ""
@@ -255,7 +616,36 @@ def save_person_route():
         return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=[str(error)])
 
 
+@app.post("/person/<stt>/delete")
+@auth_required(permission="delete")
+def delete_person_route(stt):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    if state["workbook"].suffix.lower() == ".xlsm":
+        flash("Ứng dụng không hỗ trợ xóa hồ sơ trên tệp .xlsm. Hãy dùng Excel để chỉnh sửa.", "error")
+        return redirect(url_for("index"))
+    record = find_record(stt)
+    if record is None:
+        flash("Không tìm thấy hồ sơ. Hãy làm mới tệp Excel và thử lại.", "error")
+        return redirect(url_for("index"))
+    try:
+        row, deleted_stt, backup = delete_person(
+            state["workbook"], state["sheet"], stt, request.form.get("signature", "")
+        )
+        refresh_state(force=True)
+        flash(f"Đã xóa hồ sơ STT {deleted_stt}. Bản sao lưu: {backup.name}", "success")
+        return redirect(url_for("index"))
+    except Exception as error:
+        logging.exception("Could not delete record: %s", error)
+        flash(f"Không thể xóa hồ sơ: {error}", "error")
+        return redirect(url_for("index"))
+
+
 @app.post("/generate/<stt>")
+@auth_required(permission="read")
 def generate(stt):
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -285,6 +675,7 @@ def generate(stt):
 
 
 @app.post("/generate/batch")
+@auth_required(permission="read")
 def generate_batch():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -328,6 +719,7 @@ def generate_batch():
 
 
 @app.get("/downloads/<path:filename>")
+@auth_required(permission="read")
 def download(filename):
     output_dir = state.get("last_output_dir")
     if output_dir is None or not output_dir.is_dir():
@@ -344,9 +736,16 @@ def request_too_large(error):
 def main():
     if not TEMPLATE.is_file():
         raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
+    auth_database_connection().close()
     load_saved_workbook()
-    threading.Timer(0.7, lambda: webbrowser.open("http://127.0.0.1:8765")).start()
-    app.run(host="127.0.0.1", port=8765, debug=False)
+    host = os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
+    port = int(os.environ.get("FLASK_RUN_PORT", "8765"))
+    debug = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true", "yes")
+    open_browser = os.environ.get("OPEN_BROWSER", "1").lower() in ("1", "true", "yes")
+    if open_browser:
+        threading.Timer(0.7, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+    app.run(host=host, port=port, debug=debug)
+
 
 
 if __name__ == "__main__":

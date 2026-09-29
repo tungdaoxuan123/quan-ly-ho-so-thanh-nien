@@ -127,3 +127,62 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
                 Path(temp_name).unlink(missing_ok=True)
             except OSError:
                 logging.warning("Could not remove temporary workbook %s", temp_name)
+
+
+def delete_person(path, sheet_name, stt, expected_signature):
+    """Atomically remove one record by STT and preserve a recoverable backup."""
+    path = validate_workbook_path(path)
+    if path.suffix.lower() != ".xlsx":
+        raise WorkbookError("Ứng dụng chỉ thao tác dữ liệu trên tệp .xlsx. Hãy mở tệp .xlsm bằng Excel để chỉnh sửa.")
+    with state_lock:
+        current_signature = file_signature(path)
+    if signature_token(current_signature) != expected_signature:
+        raise StaleWorkbookError("Tệp Excel đã thay đổi bên ngoài ứng dụng. Hãy làm mới và thử lại.")
+    if workbook_appears_open(path):
+        raise WorkbookBusyError("Tệp Excel đang được mở. Hãy lưu, đóng Excel rồi thử lại.")
+
+    workbook = load_workbook(path, read_only=False, data_only=False)
+    temp_name = None
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise WorkbookError(f"Không tìm thấy trang tính: {sheet_name}")
+        sheet = workbook[sheet_name]
+        headers = {normalized_header(cell.value): cell.column for cell in sheet[1] if normalized_header(cell.value)}
+        stt_column = headers.get("STT")
+        if not stt_column:
+            raise WorkbookError("Hàng 1 của tệp Excel phải có cột STT.")
+
+        target_row = None
+        for row_number in range(3, sheet.max_row + 1):
+            if display_value(sheet.cell(row_number, stt_column).value) == display_value(stt):
+                target_row = row_number
+                break
+        if target_row is None:
+            raise StaleWorkbookError("Hồ sơ không còn trong tệp Excel. Hãy làm mới và thử lại.")
+
+        sheet.delete_rows(target_row, 1)
+
+        backup_name = unique_backup_path(path)
+        with tempfile.NamedTemporaryFile(prefix=f".{path.stem}-", suffix=path.suffix, dir=path.parent, delete=False) as temporary:
+            temp_name = temporary.name
+        workbook.save(temp_name)
+        workbook.close()
+        check = load_workbook(temp_name, read_only=True, data_only=False)
+        check.close()
+        shutil.copy2(path, backup_name)
+        os.replace(temp_name, path)
+        temp_name = None
+        return target_row, str(stt), backup_name
+    except PermissionError as error:
+        raise WorkbookBusyError("Excel đang mở tệp này hoặc thư mục không cho phép ghi tệp.") from error
+    finally:
+        try:
+            workbook.close()
+        except OSError as error:
+            logging.warning("Could not close workbook handle: %s", error)
+        if temp_name:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except OSError:
+                logging.warning("Could not remove temporary workbook %s", temp_name)
+

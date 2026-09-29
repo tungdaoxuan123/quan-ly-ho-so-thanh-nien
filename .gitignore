@@ -3,6 +3,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.temp/
 
 # Local application data
 uploads/
@@ -13,6 +14,8 @@ generated-sample/
 *.sqlite
 *.sqlite3
 *.sqlite3-*
+*.db
+*.db-*
 settings.json
 
 # Excel source data and backups
@@ -31,5 +34,7 @@ dist/
 # Local secrets and operating-system files
 .env
 .env.*
+!.env.example
 .DS_Store
 *.log
+

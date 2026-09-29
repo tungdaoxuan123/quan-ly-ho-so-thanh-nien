@@ -1,3 +1,4 @@
+import tests
 import re
 import tempfile
 import unittest
@@ -6,7 +7,9 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 import quan_ly_ho_so.app as app
+from quan_ly_ho_so.auth import set_auth_database_path
 from quan_ly_ho_so.word.export import generate_document
+
 
 
 TEMPLATE = Path(__file__).resolve().parent.parent / "Mau_Ho_So_Thanh_Nien.docx"
@@ -72,10 +75,12 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.workbook_path = Path(self.temp_dir.name) / "records.xlsx"
         self.previous_database = app.state["database"]
         app.state["database"] = Path(self.temp_dir.name) / "cache.sqlite3"
+        set_auth_database_path(Path(self.temp_dir.name) / "users.db")
         self.header_count = create_test_workbook(self.workbook_path)
         app.set_workbook(self.workbook_path, persist=False)
 
     def tearDown(self):
+        set_auth_database_path(None)
         app.state.update(
             workbook=None,
             sheet=None,
@@ -178,6 +183,16 @@ class QuanLyHoSoTests(unittest.TestCase):
     def test_browser_routes_and_word_generation(self):
         client = app.app.test_client()
         with client:
+            unauth = client.get("/")
+            self.assertEqual(unauth.status_code, 302)
+            self.assertIn("/login", unauth.headers.get("Location", ""))
+
+            login_page = client.get("/login")
+            self.assertEqual(login_page.status_code, 200)
+            csrf_login = re.search(r'name="csrf_token" value="([^"]+)"', login_page.get_data(as_text=True)).group(1)
+            login_resp = client.post("/login", data={"username": "admin", "password": "admin123", "csrf_token": csrf_login})
+            self.assertEqual(login_resp.status_code, 302)
+
             response = client.get("/")
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"PHAN TR", response.data)
@@ -204,6 +219,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertTrue(first.is_file())
         self.assertTrue(second.is_file())
         self.assertNotEqual(first, second)
+
 
 
 if __name__ == "__main__":
