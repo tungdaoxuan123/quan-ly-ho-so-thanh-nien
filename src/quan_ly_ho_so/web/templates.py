@@ -65,6 +65,28 @@ PAGE = r"""
     td.stt { color: var(--muted); font-variant-numeric: tabular-nums; } td.name { font-weight: 600; color: #12213d; } td.cccd { font-variant-numeric: tabular-nums; }
     td.actions-cell, th.actions-head { text-align: right; white-space: nowrap; } td.empty { text-align: center; color: var(--muted); padding: 40px 16px; }
     .table-hint { margin: 0; padding: 14px 20px; border-top: 1px solid var(--border); background: #f7f9fc; font-size: 13px; }
+    .bulk-menu { position: relative; display: inline-block; }
+    .bulk-menu > summary { list-style: none; cursor: pointer; user-select: none; }
+    .bulk-menu > summary::-webkit-details-marker { display: none; }
+    .bulk-menu > summary::after { content: ""; display: inline-block; margin-left: 8px; width: 6px; height: 6px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg) translate(-2px, -2px); }
+    .bulk-menu[aria-disabled="true"] > summary { opacity: .55; cursor: not-allowed; }
+    .bulk-menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--border); border-radius: 9px; box-shadow: var(--shadow); overflow: hidden; }
+    .bulk-menu-list button { background: #fff; color: #12213d; border: 0; border-radius: 0; text-align: left; padding: 11px 14px; cursor: pointer; }
+    .bulk-menu-list button:hover { background: var(--primary-soft); }
+    .modal { border: 0; border-radius: 12px; padding: 0; width: min(440px, 92vw); box-shadow: 0 18px 50px rgba(9,17,32,.28); }
+    .modal::backdrop { background: rgba(9,17,32,.5); }
+    .modal-body { padding: 20px 22px; } .modal-body h2 { margin: 0 0 6px; font-size: 18px; color: #12213d; }
+    .modal-body .muted { margin: 0 0 16px; font-size: 13px; }
+    .modal-body label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
+    /* Must outrank the rule above, or the browser's [hidden] rule loses and both fields show. */
+    .modal-body label[hidden] { display: none; }
+    .modal-body select { width: 100%; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 22px; border-top: 1px solid var(--border); background: #f7f9fc; border-radius: 0 0 12px 12px; }
+    .check-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; } .check-toolbar button { padding: 5px 10px; font-size: 13px; } .check-toolbar .status { margin-left: auto; }
+    .check-list { display: grid; gap: 2px; max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 6px; }
+    /* Qualified with .modal-body, or the column layout for form labels above wins and the box drops onto its own line. */
+    .modal-body label.check-item { display: flex; flex-direction: row; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 6px; font-weight: 500; cursor: pointer; }
+    .check-item:hover { background: var(--primary-soft); } .check-item input { width: auto; margin: 0; flex: none; }
     .selected-section { margin: 16px 0; } .selected-heading { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; } .selected-heading h2 { margin: 0; font-size: 15px; } .selected-heading button { padding: 5px 9px; }
     .selected-list { list-style: none; padding: 0; margin: 0; max-height: 180px; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 4px 16px; }
     .selected-list li { display: inline-flex; gap: 3px; align-items: baseline; } .selected-list .selected-person { overflow-wrap: anywhere; }
@@ -93,10 +115,29 @@ PAGE = r"""
       <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary><div class="filter-grid"><label>Năm sinh<select name="birth_year"><option value="">Tất cả</option>{% for value in options.birth_year %}<option value="{{ value }}" {% if filters.birth_year == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Nghề nghiệp<select name="occupation"><option value="">Tất cả</option>{% for value in options.occupation %}<option value="{{ value }}" {% if filters.occupation == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Trình độ văn hóa<select name="education"><option value="">Tất cả</option>{% for value in options.education %}<option value="{{ value }}" {% if filters.education == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Dân tộc<select name="ethnicity"><option value="">Tất cả</option>{% for value in options.ethnicity %}<option value="{{ value }}" {% if filters.ethnicity == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Tôn giáo<select name="religion"><option value="">Tất cả</option>{% for value in options.religion %}<option value="{{ value }}" {% if filters.religion == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><label>Diện<select name="dien"><option value="">Tất cả</option><option value="{{ unset_dien }}" {% if filters.dien == unset_dien %}selected{% endif %}>&lt;chưa có&gt;</option>{% for code, text in dien_options %}<option value="{{ code }}" {% if filters.dien == code %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label><label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
     </form>
     <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+    <dialog class="modal" id="bulk-dialog">
+      <div class="modal-body">
+        <h2 id="bulk-title">Sửa hàng loạt</h2>
+        <p class="muted">Áp dụng cho <strong id="bulk-count">0</strong> hồ sơ đã chọn.</p>
+        <label id="bulk-quarter-field">Khu phố<select name="bulk_quarter" form="batch-form"><option value="">&lt;chưa có&gt;</option>{% for quarter in quarter_choices %}<option value="{{ quarter }}">{{ quarter }}</option>{% endfor %}</select></label>
+        <label id="bulk-dien-field">Diện (nghĩa vụ quân sự)<select name="bulk_dien" form="batch-form"><option value="">&lt;chưa có&gt;</option>{% for code, text in dien_options %}<option value="{{ code }}">{{ text }}</option>{% endfor %}</select></label>
+      </div>
+      <div class="modal-actions"><button type="button" class="secondary" id="bulk-cancel">Hủy bỏ</button><button type="submit" form="batch-form" id="bulk-save">Lưu</button></div>
+    </dialog>
+    <form id="dien-export-form" action="{{ url_for('export_by_dien') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+    <dialog class="modal" id="dien-export-dialog">
+      <div class="modal-body">
+        <h2>Xuất Excel theo Diện</h2>
+        <p class="muted">Chọn một hoặc nhiều diện cần đưa vào tệp Excel.</p>
+        <div class="check-toolbar"><button type="button" class="secondary" id="dien-check-all">Chọn tất cả</button><button type="button" class="secondary" id="dien-check-none">Bỏ chọn tất cả</button><span class="status" id="dien-check-count">Chưa chọn diện nào</span></div>
+        <div class="check-list">{% for code, text in dien_options %}<label class="check-item"><input type="checkbox" name="export_dien" value="{{ code }}" form="dien-export-form">{{ text }}</label>{% endfor %}</div>
+      </div>
+      <div class="modal-actions"><button type="button" class="secondary" id="dien-export-cancel">Hủy bỏ</button><button type="submit" form="dien-export-form" id="dien-export-confirm" disabled>Xuất Excel</button></div>
+    </dialog>
     <section class="selected-section" id="selected-panel" aria-labelledby="selected-heading" hidden><div class="selected-heading"><h2 id="selected-heading">Hồ sơ đã chọn (<span id="selected-total">0</span>)</h2><span class="muted">Lựa chọn được giữ lại khi lọc hoặc đổi trang.</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button></div><ul class="selected-list" id="selected-list"></ul></section>
     <section class="card table-card">
-      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button><button type="submit" form="batch-form" id="batch-excel-btn" class="secondary" formaction="{{ url_for('export_batch_excel') }}" disabled>Tạo Excel hàng loạt</button></div></div>
-      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="8" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
+      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button><details class="bulk-menu" id="bulk-menu"><summary class="button secondary" id="bulk-summary" role="button">Sửa hàng loạt</summary><div class="bulk-menu-list"><button type="button" data-bulk="quarter">Khu phố</button><button type="button" data-bulk="dien">Diện</button></div></details><button type="button" class="secondary" id="export-dien-btn">Xuất Excel theo Diện</button><button type="submit" form="batch-form" id="batch-excel-btn" class="secondary" formaction="{{ url_for('export_batch_excel') }}" disabled>Tạo Excel hàng loạt</button></div></div>
+      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Khu phố</th><th>Diện</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.quarter %}{{ record.quarter }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form></div></details></td></tr>{% else %}<tr><td colspan="9" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
       <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập. Bấm "Tạo Excel hàng loạt" để xuất danh sách những hồ sơ đã chọn ra tệp Excel theo mẫu, kèm cột "Diện" ở cuối.</p>
     </section>
     {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
@@ -107,6 +148,56 @@ PAGE = r"""
       const rowCheckboxes = Array.from(document.querySelectorAll('.row-select'));
       const selectAll = document.getElementById('select-all');
       const batchForm = document.getElementById('batch-form');
+      const bulkMenu = document.getElementById('bulk-menu');
+      const bulkDialog = document.getElementById('bulk-dialog');
+      const bulkFields = {
+        quarter: {label: 'Khu phố', field: document.getElementById('bulk-quarter-field'), action: {{ url_for('bulk_update_quarter')|tojson }}},
+        dien: {label: 'Diện', field: document.getElementById('bulk-dien-field'), action: {{ url_for('bulk_update_dien')|tojson }}}
+      };
+      function showBulkDialog(kind) {
+        const chosen = bulkFields[kind];
+        document.getElementById('bulk-title').textContent = 'Sửa hàng loạt · ' + chosen.label;
+        // Only the field on show may travel with the form, so the other one cannot overwrite anything.
+        Object.values(bulkFields).forEach(function (entry) {
+          const active = entry === chosen;
+          const select = entry.field.querySelector('select');
+          entry.field.hidden = !active;
+          select.disabled = !active;
+          select.selectedIndex = 0;
+        });
+        document.getElementById('bulk-save').setAttribute('formaction', chosen.action);
+        bulkMenu.open = false;
+        bulkDialog.showModal();
+      }
+      bulkMenu.addEventListener('click', function (event) {
+        if (bulkMenu.getAttribute('aria-disabled') === 'true') { event.preventDefault(); return; }
+        const choice = event.target.closest('[data-bulk]');
+        if (choice) showBulkDialog(choice.dataset.bulk);
+      });
+      document.getElementById('bulk-cancel').addEventListener('click', function () { bulkDialog.close(); });
+      bulkDialog.addEventListener('click', function (event) { if (event.target === bulkDialog) bulkDialog.close(); });
+
+      const dienExportDialog = document.getElementById('dien-export-dialog');
+      const dienBoxes = Array.from(dienExportDialog.querySelectorAll('input[name="export_dien"]'));
+      function updateDienExport() {
+        const chosen = dienBoxes.filter(function (box) { return box.checked; }).length;
+        document.getElementById('dien-check-count').textContent = chosen ? 'Đã chọn ' + chosen + ' diện' : 'Chưa chọn diện nào';
+        document.getElementById('dien-export-confirm').disabled = !chosen;
+      }
+      dienBoxes.forEach(function (box) { box.addEventListener('change', updateDienExport); });
+      document.getElementById('dien-check-all').addEventListener('click', function () {
+        dienBoxes.forEach(function (box) { box.checked = true; }); updateDienExport();
+      });
+      document.getElementById('dien-check-none').addEventListener('click', function () {
+        dienBoxes.forEach(function (box) { box.checked = false; }); updateDienExport();
+      });
+      document.getElementById('export-dien-btn').addEventListener('click', function () {
+        dienBoxes.forEach(function (box) { box.checked = false; });
+        updateDienExport();
+        dienExportDialog.showModal();
+      });
+      document.getElementById('dien-export-cancel').addEventListener('click', function () { dienExportDialog.close(); });
+      dienExportDialog.addEventListener('click', function (event) { if (event.target === dienExportDialog) dienExportDialog.close(); });
       let savedSelection = [];
       try { savedSelection = JSON.parse(sessionStorage.getItem(selectionKey) || '[]'); } catch (error) { savedSelection = []; }
       const selectedRecords = new Map();
@@ -150,6 +241,9 @@ PAGE = r"""
         document.getElementById('batch-btn').disabled = !count;
         document.getElementById('batch-excel-btn').disabled = !count;
         document.getElementById('clear-selection').disabled = !count;
+        bulkMenu.setAttribute('aria-disabled', count ? 'false' : 'true');
+        if (!count) bulkMenu.open = false;
+        document.getElementById('bulk-count').textContent = count;
         const visibleSelected = rowCheckboxes.filter(function(box){ return box.checked; }).length;
         selectAll.disabled = !rowCheckboxes.length;
         selectAll.checked = !!rowCheckboxes.length && visibleSelected === rowCheckboxes.length;

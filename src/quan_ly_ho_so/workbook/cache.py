@@ -85,6 +85,33 @@ def _rekey_to_citizen_id(connection, tables):
         logging.info("Re-keyed %s to CCCD: %d row(s) moved, %d dropped", table, moved, dropped)
 
 
+def _allow_record_without_type(connection):
+    """Rebuild record_types if `type` is still NOT NULL.
+
+    A record may now carry only a quarter, and SQLite cannot drop a column constraint in place.
+    Left alone, INSERT OR IGNORE silently skips such rows and the write is lost without an error.
+    """
+    columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(record_types)")}
+    if "type" not in columns or not columns["type"]["notnull"]:
+        return
+    connection.executescript(
+        """
+        ALTER TABLE record_types RENAME TO record_types_required_type;
+        CREATE TABLE record_types (
+            workbook TEXT NOT NULL,
+            citizen_id TEXT NOT NULL,
+            type TEXT,
+            quarter TEXT,
+            PRIMARY KEY (workbook, citizen_id)
+        );
+        INSERT INTO record_types (workbook, citizen_id, type, quarter)
+            SELECT workbook, citizen_id, type, quarter FROM record_types_required_type;
+        DROP TABLE record_types_required_type;
+        """
+    )
+    logging.info("Rebuilt record_types so a record can carry a quarter without an NVQS status")
+
+
 def _stop_reusing_file_ids(connection):
     """Rebuild record_files with AUTOINCREMENT if it predates that fix, keeping existing ids."""
     created = connection.execute(
@@ -136,7 +163,8 @@ def database_connection():
         CREATE TABLE IF NOT EXISTS record_types (
             workbook TEXT NOT NULL,
             citizen_id TEXT NOT NULL,
-            type TEXT NOT NULL,
+            type TEXT,
+            quarter TEXT,
             PRIMARY KEY (workbook, citizen_id)
         );
         -- Related paperwork, already rendered to page images. Also app-owned data that the
@@ -175,7 +203,8 @@ def database_connection():
             address_key TEXT NOT NULL,
             citizen_id_key TEXT NOT NULL,
             data_json TEXT NOT NULL,
-            type TEXT
+            type TEXT,
+            quarter TEXT
         );
         CREATE INDEX IF NOT EXISTS records_stt_idx ON records(stt);
         CREATE INDEX IF NOT EXISTS records_birth_year_idx ON records(birth_year_key);
@@ -186,13 +215,25 @@ def database_connection():
         CREATE INDEX IF NOT EXISTS records_citizen_id_idx ON records(citizen_id_key);
         """
     )
+    # "Khu phố" used to be spelled `ward`. Rename before the checks below, or they would add an
+    # empty `quarter` column and strand the neighbourhoods already recorded under the old name.
+    for table in ("records", "record_types"):
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if "ward" in columns and "quarter" not in columns:
+            connection.execute(f"ALTER TABLE {table} RENAME COLUMN ward TO quarter")
+            logging.info("Renamed %s.ward to %s.quarter", table, table)
     # Cache files created before the "type" column existed need an in-place upgrade;
     # CREATE TABLE IF NOT EXISTS above leaves an already-existing table untouched.
     existing_columns = {row["name"] for row in connection.execute("PRAGMA table_info(records)")}
     if "type" not in existing_columns:
         connection.execute("ALTER TABLE records ADD COLUMN type TEXT")
+    if "quarter" not in existing_columns:
+        connection.execute("ALTER TABLE records ADD COLUMN quarter TEXT")
+    if "quarter" not in {row["name"] for row in connection.execute("PRAGMA table_info(record_types)")}:
+        connection.execute("ALTER TABLE record_types ADD COLUMN quarter TEXT")
     if stale_tables:
         _rekey_to_citizen_id(connection, stale_tables)
+    _allow_record_without_type(connection)
     _stop_reusing_file_ids(connection)
     connection.commit()
     return connection
@@ -202,28 +243,48 @@ def metadata_values(connection):
     return {row["key"]: row["value"] for row in connection.execute("SELECT key, value FROM cache_metadata")}
 
 
-def stored_record_types(connection, workbook):
-    rows = connection.execute("SELECT citizen_id, type FROM record_types WHERE workbook = ?", (str(workbook),))
-    return {row["citizen_id"]: row["type"] for row in rows}
+def stored_record_attributes(connection, workbook):
+    """Everything the manager set by hand, as {CCCD: {"type": ..., "quarter": ...}}."""
+    rows = connection.execute(
+        "SELECT citizen_id, type, quarter FROM record_types WHERE workbook = ?", (str(workbook),)
+    )
+    return {row["citizen_id"]: {"type": row["type"], "quarter": row["quarter"]} for row in rows}
 
 
-def set_record_type(workbook, citizen_id, type_code):
-    """Persist the NVQS status picked in the form, keeping it out of the rebuilt `records` table."""
+def set_record_attribute(workbook, citizen_id, field, value):
+    """Set one manager-chosen field, keeping it out of the rebuilt `records` table.
+
+    `field` is a column of record_types, never user input.
+    """
+    if field not in ("type", "quarter"):
+        raise ValueError(f"Unknown record attribute: {field}")
+    workbook, citizen_id = str(workbook), display_value(citizen_id)
     connection = database_connection()
     try:
         with connection:
-            if type_code:
-                connection.execute(
-                    "INSERT OR REPLACE INTO record_types (workbook, citizen_id, type) VALUES (?, ?, ?)",
-                    (str(workbook), display_value(citizen_id), type_code),
-                )
-            else:
-                connection.execute(
-                    "DELETE FROM record_types WHERE workbook = ? AND citizen_id = ?",
-                    (str(workbook), display_value(citizen_id)),
-                )
+            connection.execute(
+                "INSERT OR IGNORE INTO record_types (workbook, citizen_id) VALUES (?, ?)",
+                (workbook, citizen_id),
+            )
+            connection.execute(
+                f"UPDATE record_types SET {field} = ? WHERE workbook = ? AND citizen_id = ?",
+                (value or None, workbook, citizen_id),
+            )
+            # The row only exists to carry these fields, so drop it once both are cleared.
+            connection.execute(
+                """
+                DELETE FROM record_types
+                WHERE workbook = ? AND citizen_id = ?
+                  AND COALESCE(type, '') = '' AND COALESCE(quarter, '') = ''
+                """,
+                (workbook, citizen_id),
+            )
     finally:
         connection.close()
+
+
+def set_record_type(workbook, citizen_id, type_code):
+    set_record_attribute(workbook, citizen_id, "type", type_code)
 
 
 def move_record_owner(workbook, old_citizen_id, new_citizen_id):
@@ -359,13 +420,13 @@ def sync_workbook_to_database(path):
             INSERT INTO records (
                 row_number, stt, name, birth_year, citizen_id, occupation, education, ethnicity, religion,
                 address, search_text, birth_year_key, occupation_key, education_key, ethnicity_key,
-                religion_key, address_key, citizen_id_key, data_json, type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                religion_key, address_key, citizen_id_key, data_json, type, quarter
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         count = 0
         batch = []
         loaded_at = datetime.now()
-        stored_types = stored_record_types(connection, path)
+        stored_attributes = stored_record_attributes(connection, path)
         with connection:
             connection.execute("DELETE FROM records")
             for row_number, values in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
@@ -395,7 +456,8 @@ def sync_workbook_to_database(path):
                     # What the manager picked in the form wins: it is never written back to the
                     # workbook, so a stale "Diện" column must not overwrite it. That optional
                     # column is only a starting value for records nobody has set in the app yet.
-                    stored_types.get(citizen_id) or NvqsStatus.type_for(data.get("Diện", "")),
+                    stored_attributes.get(citizen_id, {}).get("type") or NvqsStatus.type_for(data.get("Diện", "")),
+                    stored_attributes.get(citizen_id, {}).get("quarter"),
                 ))
                 count += 1
                 if len(batch) >= 500:
@@ -444,6 +506,7 @@ def row_to_record(row):
         "data": json.loads(row["data_json"]),
         "type": row["type"],
         "dien": NvqsStatus.value_for(row["type"]),
+        "quarter": row["quarter"] or "",
     }
 
 

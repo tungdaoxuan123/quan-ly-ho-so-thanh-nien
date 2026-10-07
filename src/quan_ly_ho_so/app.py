@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import webbrowser
+import zipfile
 from pathlib import Path
 
 from flask import (
@@ -29,13 +30,16 @@ from werkzeug.utils import secure_filename
 
 from quan_ly_ho_so.config import (
     DEFAULT_OUTPUT_NAME,
+    DIEN_TEMPLATE_DIR,
     FILTER_DB_COLUMNS,
     FORM_GROUPS,
     LIST_TEMPLATE,
+    MAX_EXPORT_RECORDS,
     MAX_RECORDS_PER_PAGE,
     SUPPORTED_SUFFIXES,
     TEMPLATE,
     UNSET_DIEN_FILTER,
+    QUARTER_CHOICES,
     UPLOAD_DIR,
 )
 from quan_ly_ho_so.attachments import AttachmentError, document_pages
@@ -56,9 +60,11 @@ from quan_ly_ho_so.workbook.cache import (
     record_file_image,
     query_filter_options,
     query_records,
+    set_record_attribute,
     set_record_type,
     signature_token,
 )
+from quan_ly_ho_so.workbook.dien_export import DIEN_TEMPLATES, build_dien_workbook
 from quan_ly_ho_so.workbook.list_export import build_list_workbook
 from quan_ly_ho_so.workbook.manager import (
     load_saved_workbook,
@@ -132,6 +138,7 @@ def index():
         dien_options=NvqsStatus.options(),
         unset_dien=UNSET_DIEN_FILTER,
         selection_scope=f"{state['workbook']}:{state['sheet']}",
+        quarter_choices=QUARTER_CHOICES,
     )
 
 
@@ -438,6 +445,63 @@ def remove_record_file(stt, file_id):
     return redirect(url_for("edit_person", stt=stt))
 
 
+def apply_to_selection(field, value, label, shown_value):
+    """Set one manager-chosen field on every ticked record, filed under each owner's CCCD."""
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    selected_stt = request.form.getlist("stt")
+    if not selected_stt:
+        flash("Hãy chọn ít nhất một hồ sơ để sửa hàng loạt.", "error")
+        return redirect(url_for("index"))
+
+    changed, missing, without_citizen_id = 0, [], []
+    for stt in selected_stt:
+        record = find_record(stt)
+        if record is None:
+            missing.append(stt)
+        elif not record["citizen_id"]:
+            without_citizen_id.append(stt)
+        else:
+            set_record_attribute(state["workbook"], record["citizen_id"], field, value)
+            changed += 1
+    if changed:
+        refresh_state(force=True)
+        if shown_value:
+            flash(f"Đã đặt {label} \"{shown_value}\" cho {changed} hồ sơ.", "success")
+        else:
+            flash(f"Đã xóa {label} của {changed} hồ sơ.", "success")
+    if without_citizen_id:
+        flash(
+            f"Bỏ qua hồ sơ STT {', '.join(without_citizen_id)} vì chưa có số CCCD — {label} được lưu theo số CCCD.",
+            "error",
+        )
+    if missing:
+        flash(f"Không tìm thấy hồ sơ STT: {', '.join(missing)}. Hãy làm mới tệp Excel và thử lại.", "error")
+    return redirect(url_for("index"))
+
+
+@app.post("/bulk/dien")
+def bulk_update_dien():
+    value = request.form.get("bulk_dien", "").strip()
+    if value and value not in NvqsStatus.__members__:
+        flash("Diện nghĩa vụ quân sự không hợp lệ.", "error")
+        return redirect(url_for("index"))
+    return apply_to_selection("type", value, "Diện", NvqsStatus.value_for(value))
+
+
+@app.post("/bulk/khu-pho")
+def bulk_update_quarter():
+    value = request.form.get("bulk_quarter", "").strip()
+    if value and value not in QUARTER_CHOICES:
+        flash("Khu phố không hợp lệ.", "error")
+        return redirect(url_for("index"))
+    return apply_to_selection("quarter", value, "Khu phố", value)
+
+
 @app.post("/export/batch")
 def export_batch_excel():
     if not valid_csrf(request.form.get("csrf_token")):
@@ -478,6 +542,63 @@ def export_batch_excel():
     state["last_output_dir"] = output_dir
     flash(f"Đã tạo tệp Excel danh sách cho {len(records)} hồ sơ: {output.name}.", "success")
     return redirect(url_for("download", filename=output.name))
+
+
+@app.post("/export/dien")
+def export_by_dien():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    chosen = [code for code in request.form.getlist("export_dien") if code in NvqsStatus.__members__]
+    if not chosen:
+        flash("Hãy chọn ít nhất một diện để xuất Excel.", "error")
+        return redirect(url_for("index"))
+
+    output_dir = state["workbook"].parent / DEFAULT_OUTPUT_NAME
+    written, empty, missing_template = [], [], []
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for code in chosen:
+            label = NvqsStatus.value_for(code)
+            template = DIEN_TEMPLATE_DIR / DIEN_TEMPLATES[code]
+            if not template.is_file():
+                missing_template.append(template.name)
+                continue
+            records, _ = query_records("", {"dien": code}, MAX_EXPORT_RECORDS, 0)
+            if not records:
+                empty.append(label)
+                continue
+            listing = build_dien_workbook(records, template)
+            output = unique_output_path(output_dir, f"{label} ({len(records)} người)", suffix=".xlsx")
+            listing.save(output)
+            written.append(output)
+    except Exception as error:
+        logging.exception("Could not export by diện: %s", error)
+        flash(f"Không thể tạo tệp Excel theo diện: {error}", "error")
+        return redirect(url_for("index"))
+
+    for name in missing_template:
+        flash(f"Không tìm thấy tệp mẫu {name} trong thư mục template.", "error")
+    if empty:
+        flash(f"Không có hồ sơ nào thuộc diện: {', '.join(empty)}.", "error")
+    if not written:
+        return redirect(url_for("index"))
+
+    state["last_output_dir"] = output_dir
+    if len(written) == 1:
+        flash(f"Đã tạo tệp Excel: {written[0].name}.", "success")
+        return redirect(url_for("download", filename=written[0].name))
+
+    # One file per diện, handed over together so the browser can deliver them in a single download.
+    bundle = unique_output_path(output_dir, f"Danh sách theo diện ({len(written)} tệp)", suffix=".zip")
+    with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in written:
+            archive.write(path, path.name)
+    flash(f"Đã tạo {len(written)} tệp Excel theo diện, tải về trong {bundle.name}.", "success")
+    return redirect(url_for("download", filename=bundle.name))
 
 
 @app.get("/downloads/<path:filename>")

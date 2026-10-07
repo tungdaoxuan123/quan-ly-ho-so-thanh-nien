@@ -21,6 +21,8 @@ settings.json
 *.backup-*.xlsx
 # ...but the blank list template is part of the application, not somebody's data
 !Mau_Danh_Sach_Thanh_Nien.xlsx
+# The per-diện forms are part of the application too: the export reads them at runtime.
+!template/*.xlsx
 
 # Generated documents outside ignored output directories
 *.generated.docx

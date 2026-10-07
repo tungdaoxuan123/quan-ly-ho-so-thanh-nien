@@ -17,12 +17,18 @@ BASE_DIR = resource_dir()
 UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
 LIST_TEMPLATE = BASE_DIR / "Mau_Danh_Sach_Thanh_Nien.xlsx"
+DIEN_TEMPLATE_DIR = BASE_DIR / "template"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
+# A per-diện export covers the whole workbook, not one page of it.
+MAX_EXPORT_RECORDS = 100000
 CACHE_SEARCH_SCOPE = "identity-v2"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 # Sentinel for the "Diện" filter, since an empty value already means "no filter".
 UNSET_DIEN_FILTER = "__none__"
+# The quarters (khu phố) this ward is divided into. Observed 1-55 in the current records; edit this
+# single line if the list changes.
+QUARTER_CHOICES = [f"Khu phố {number}" for number in range(1, 56)]
 FILTER_DB_COLUMNS = {
     "birth_year": ("birth_year", "birth_year_key"),
     "occupation": ("occupation", "occupation_key"),
