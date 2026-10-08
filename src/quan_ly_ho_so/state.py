@@ -26,12 +26,12 @@ _settings_file = None
 
 
 def settings_path():
-    """Return a writable path for settings and the SQLite cache.
+    """Return a writable path for settings and the SQLite database.
 
-    LocalAppData is normally the right place on Windows, but it can be
-    unavailable on managed computers.  In that case keep the app's local
-    state beside the application rather than preventing the workbook from
-    loading altogether.
+    They live beside the application, so the manager's data travels with the folder. If that
+    folder is read-only (for example under Program Files), fall back to the per-user
+    application-data folder, then to the temp folder, rather than preventing the workbook
+    from loading altogether.
     """
     global _settings_file
     if _settings_file is not None:
@@ -44,11 +44,14 @@ def settings_path():
     else:
         root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
 
-    preferred = root / "Quan_Ly_Ho_So_Thanh_Nien"
-    fallbacks = (BASE_DIR / ".quan_ly_ho_so_data", Path(tempfile.gettempdir()) / "Quan_Ly_Ho_So_Thanh_Nien")
+    preferred = BASE_DIR
+    fallbacks = (root / "Quan_Ly_Ho_So_Thanh_Nien", Path(tempfile.gettempdir()) / "Quan_Ly_Ho_So_Thanh_Nien")
     for directory in (preferred, *fallbacks):
         try:
             directory.mkdir(parents=True, exist_ok=True)
+            # mkdir succeeds on a read-only folder that already exists, so prove it is writable.
+            with tempfile.TemporaryFile(dir=directory):
+                pass
         except OSError as error:
             logging.warning("Cannot use application-data folder %s: %s", directory, error)
             continue

@@ -49,8 +49,8 @@ def unique_backup_path(path):
     return candidate
 
 
-def save_person(path, sheet_name, updates, expected_signature, original_stt=None):
-    """Atomically update one record and preserve a recoverable backup."""
+def checked_writable_path(path, expected_signature):
+    """Validate `path` for a write: an .xlsx, unchanged since `expected_signature`, and not open in Excel."""
     path = validate_workbook_path(path)
     if path.suffix.lower() != ".xlsx":
         raise WorkbookError("Ứng dụng chỉ lưu biểu mẫu vào tệp .xlsx. Hãy mở tệp .xlsm bằng Excel để chỉnh sửa.")
@@ -60,9 +60,50 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
         raise StaleWorkbookError("Tệp Excel đã thay đổi bên ngoài ứng dụng. Hãy làm mới và mở lại hồ sơ.")
     if workbook_appears_open(path):
         raise WorkbookBusyError("Tệp Excel đang được mở. Hãy lưu, đóng Excel rồi thử lại.")
+    return path
 
+
+def replace_workbook(path, workbook):
+    """Save `workbook` over `path` atomically, keeping the old file as a backup, and return the backup's path."""
+    backup_name = unique_backup_path(path)
+    with tempfile.NamedTemporaryFile(prefix=f".{path.stem}-", suffix=path.suffix, dir=path.parent, delete=False) as temporary:
+        temp_name = temporary.name
+    try:
+        workbook.save(temp_name)
+        workbook.close()
+        check = load_workbook(temp_name, read_only=True, data_only=False)
+        check.close()
+        shutil.copy2(path, backup_name)
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            Path(temp_name).unlink(missing_ok=True)
+        except OSError:
+            logging.warning("Could not remove temporary workbook %s", temp_name)
+        raise
+    return backup_name
+
+
+def last_person_row(sheet, stt_column, name_column):
+    """Return (row of the last person, highest numeric STT); row is 2 when the sheet has no people yet."""
+    last_row, highest_stt = 2, 0
+    for row_number in range(3, sheet.max_row + 1):
+        existing_stt = display_value(sheet.cell(row_number, stt_column).value)
+        existing_name = display_value(sheet.cell(row_number, name_column).value)
+        if not existing_stt or not existing_name:
+            continue
+        last_row = row_number
+        try:
+            highest_stt = max(highest_stt, int(float(existing_stt)))
+        except (TypeError, ValueError):
+            continue
+    return last_row, highest_stt
+
+
+def save_person(path, sheet_name, updates, expected_signature, original_stt=None):
+    """Atomically update one record and preserve a recoverable backup."""
+    path = checked_writable_path(path, expected_signature)
     workbook = load_workbook(path, read_only=False, data_only=False)
-    temp_name = None
     try:
         if sheet_name not in workbook.sheetnames:
             raise WorkbookError(f"Không tìm thấy trang tính: {sheet_name}")
@@ -82,19 +123,9 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
             if target_row is None:
                 raise StaleWorkbookError("Hồ sơ không còn trong tệp Excel. Hãy làm mới và thử lại.")
         else:
-            target_row = 3
-            highest_stt = 0
-            for row_number in range(3, sheet.max_row + 1):
-                existing_stt = display_value(sheet.cell(row_number, stt_column).value)
-                existing_name = display_value(sheet.cell(row_number, name_column).value)
-                if not existing_stt or not existing_name:
-                    continue
-                target_row = row_number + 1
-                try:
-                    highest_stt = max(highest_stt, int(float(existing_stt)))
-                except (TypeError, ValueError):
-                    continue
-            copy_row_style(sheet, target_row - 1, target_row)
+            last_row, highest_stt = last_person_row(sheet, stt_column, name_column)
+            target_row = last_row + 1
+            copy_row_style(sheet, last_row, target_row)
             updates[stt_column] = highest_stt + 1
 
         for column, value in updates.items():
@@ -104,16 +135,7 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
             raise WorkbookError("TÊN THƯỜNG DÙNG là thông tin bắt buộc.")
         saved_stt = display_value(sheet.cell(target_row, stt_column).value)
 
-        backup_name = unique_backup_path(path)
-        with tempfile.NamedTemporaryFile(prefix=f".{path.stem}-", suffix=path.suffix, dir=path.parent, delete=False) as temporary:
-            temp_name = temporary.name
-        workbook.save(temp_name)
-        workbook.close()
-        check = load_workbook(temp_name, read_only=True, data_only=False)
-        check.close()
-        shutil.copy2(path, backup_name)
-        os.replace(temp_name, path)
-        temp_name = None
+        backup_name = replace_workbook(path, workbook)
         return target_row, saved_stt, backup_name
     except PermissionError as error:
         raise WorkbookBusyError("Excel đang mở tệp này hoặc thư mục không cho phép ghi tệp.") from error
@@ -122,8 +144,42 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
             workbook.close()
         except OSError as error:
             logging.warning("Could not close workbook handle: %s", error)
-        if temp_name:
-            try:
-                Path(temp_name).unlink(missing_ok=True)
-            except OSError:
-                logging.warning("Could not remove temporary workbook %s", temp_name)
+
+
+def append_people(path, sheet_name, people, expected_signature):
+    """Append new records in one atomic write and return ([their STTs], backup path).
+
+    `people` is a list of {normalized header: value}; headers the sheet lacks are ignored.
+    """
+    path = checked_writable_path(path, expected_signature)
+    workbook = load_workbook(path, read_only=False, data_only=False)
+    try:
+        if sheet_name not in workbook.sheetnames:
+            raise WorkbookError(f"Không tìm thấy trang tính: {sheet_name}")
+        sheet = workbook[sheet_name]
+        headers = {normalized_header(cell.value): cell.column for cell in sheet[1] if normalized_header(cell.value)}
+        stt_column = headers.get("STT")
+        name_column = headers.get("TÊN THƯỜNG DÙNG")
+        if not stt_column or not name_column:
+            raise WorkbookError("Hàng 1 của tệp Excel phải có cột STT và TÊN THƯỜNG DÙNG.")
+
+        last_row, highest_stt = last_person_row(sheet, stt_column, name_column)
+        assigned = []
+        for offset, person in enumerate(people, start=1):
+            row = last_row + offset
+            copy_row_style(sheet, last_row, row)
+            sheet.cell(row, stt_column).value = highest_stt + offset
+            for header, value in person.items():
+                if header in headers and header != "STT":
+                    sheet.cell(row, headers[header]).value = value
+            if not display_value(sheet.cell(row, name_column).value):
+                raise WorkbookError("TÊN THƯỜNG DÙNG là thông tin bắt buộc.")
+            assigned.append(str(highest_stt + offset))
+        return assigned, replace_workbook(path, workbook)
+    except PermissionError as error:
+        raise WorkbookBusyError("Excel đang mở tệp này hoặc thư mục không cho phép ghi tệp.") from error
+    finally:
+        try:
+            workbook.close()
+        except OSError as error:
+            logging.warning("Could not close workbook handle: %s", error)

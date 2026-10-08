@@ -18,11 +18,13 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
 LIST_TEMPLATE = BASE_DIR / "Mau_Danh_Sach_Thanh_Nien.xlsx"
 DIEN_TEMPLATE_DIR = BASE_DIR / "template"
+# Related paperwork (photos, PDFs, converted Word files), one folder per CCCD.
+DOCUMENT_DIR = BASE_DIR / "Tài liệu liên quan"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
 # A per-diện export covers the whole workbook, not one page of it.
 MAX_EXPORT_RECORDS = 100000
-CACHE_SEARCH_SCOPE = "identity-v2"
+CACHE_SEARCH_SCOPE = "identity-v3"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 # Sentinel for the "Diện" filter, since an empty value already means "no filter".
 UNSET_DIEN_FILTER = "__none__"

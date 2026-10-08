@@ -1,4 +1,4 @@
-"""Turn uploaded paperwork into page images, so related documents can live in the database."""
+"""Check uploaded paperwork before it is filed: originals kept, Word converted to PDF, thumbnails on demand."""
 
 import io
 import logging
@@ -12,8 +12,6 @@ PDF_SUFFIXES = {".pdf"}
 WORD_SUFFIXES = {".doc", ".docx", ".docm", ".rtf", ".odt"}
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES | PDF_SUFFIXES | WORD_SUFFIXES
 
-MAX_PAGES = 30
-FULL_MAX_EDGE = 1700
 THUMBNAIL_MAX_EDGE = 360
 JPEG_QUALITY = 85
 WD_FORMAT_PDF = 17
@@ -42,23 +40,25 @@ def _encode(image, max_edge):
     return buffer.getvalue()
 
 
-def _pdf_pages(pdf_path):
+def _pdf_thumbnail(pdf_bytes):
+    """Render page 1 of a PDF as a small JPEG for the document grid; also proves the PDF opens."""
     try:
         import pypdfium2 as pdfium
     except ImportError as error:
         raise AttachmentError("Thiếu thư viện pypdfium2 để đọc tệp PDF. Hãy cài lại phụ thuộc của ứng dụng.") from error
 
-    document = pdfium.PdfDocument(str(pdf_path))
     try:
-        images = []
-        for index in range(min(len(document), MAX_PAGES)):
-            page = document[index]
-            width, height = page.get_size()
-            longest = max(width, height) or 1
-            # get_size() is in points; render at whatever zoom lands near the stored width.
-            scale = min(max(FULL_MAX_EDGE / longest, 1.0), 4.0)
-            images.append(page.render(scale=scale).to_pil())
-        return images
+        document = pdfium.PdfDocument(pdf_bytes)
+    except Exception as error:
+        raise AttachmentError(f"Không đọc được tệp PDF: {error}") from error
+    try:
+        if not len(document):
+            raise AttachmentError("Tệp PDF không có trang nào.")
+        page = document[0]
+        width, height = page.get_size()
+        # get_size() is in points; render at a zoom that lands near the thumbnail edge.
+        scale = THUMBNAIL_MAX_EDGE * 2 / (max(width, height) or 1)
+        return _encode(page.render(scale=scale).to_pil(), THUMBNAIL_MAX_EDGE)
     finally:
         document.close()
 
@@ -98,31 +98,43 @@ def _word_to_pdf(source, target):
         pythoncom.CoUninitialize()
 
 
-def document_pages(data, filename):
-    """Return [(full JPEG bytes, thumbnail JPEG bytes)] for every page of an uploaded document."""
+def prepare_document(data, filename):
+    """Check an upload and return (name to store it under, bytes to store).
+
+    Images and PDFs are kept byte for byte; Word-family files are saved as PDF.
+    """
     suffix = Path(filename).suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise AttachmentError(f"Không hỗ trợ tệp {suffix or filename}. Hãy tải lên tệp Word, PDF hoặc ảnh.")
     if not data:
         raise AttachmentError("Tệp tải lên rỗng.")
 
-    Image = _require_pillow()
     if suffix in IMAGE_SUFFIXES:
+        Image = _require_pillow()
         try:
-            images = [Image.open(io.BytesIO(data))]
+            Image.open(io.BytesIO(data)).load()
         except Exception as error:
             raise AttachmentError(f"Không đọc được tệp ảnh: {error}") from error
-        return [(_encode(images[0], FULL_MAX_EDGE), _encode(images[0], THUMBNAIL_MAX_EDGE))]
+        return filename, data
 
-    with tempfile.TemporaryDirectory(prefix="ho-so-lien-quan-") as folder:
-        source = Path(folder) / f"upload{suffix}"
-        source.write_bytes(data)
-        if suffix in WORD_SUFFIXES:
-            pdf_path = Path(folder) / "upload.pdf"
-            _word_to_pdf(source, pdf_path)
-        else:
-            pdf_path = source
-        images = _pdf_pages(pdf_path)
-        if not images:
-            raise AttachmentError("Tệp không có trang nào để chuyển thành ảnh.")
-        return [(_encode(image, FULL_MAX_EDGE), _encode(image, THUMBNAIL_MAX_EDGE)) for image in images]
+    if suffix in WORD_SUFFIXES:
+        with tempfile.TemporaryDirectory(prefix="ho-so-lien-quan-") as folder:
+            source = Path(folder) / f"upload{suffix}"
+            target = Path(folder) / "upload.pdf"
+            source.write_bytes(data)
+            _word_to_pdf(source, target)
+            data = target.read_bytes()
+        filename = f"{Path(filename).stem}.pdf"
+    _pdf_thumbnail(data)  # raises AttachmentError if the PDF cannot be opened
+    return filename, data
+
+
+def document_thumbnail(path):
+    """Small JPEG of a stored image, or of page 1 of a stored PDF."""
+    if path.suffix.lower() in PDF_SUFFIXES:
+        return _pdf_thumbnail(path.read_bytes())
+    Image = _require_pillow()
+    try:
+        return _encode(Image.open(path), THUMBNAIL_MAX_EDGE)
+    except Exception as error:
+        raise AttachmentError(f"Không đọc được tệp ảnh: {error}") from error

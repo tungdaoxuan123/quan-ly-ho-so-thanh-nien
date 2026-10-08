@@ -1,5 +1,6 @@
 """Workbook path validation and the SQLite read/search cache."""
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -182,6 +183,17 @@ def database_connection():
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS record_files_owner_idx ON record_files(workbook, citizen_id);
+        -- When the app first saw each record, when it last changed, and whether it was soft-deleted.
+        -- App-owned, keyed by CCCD like record_types, so it survives the rebuild of `records`.
+        CREATE TABLE IF NOT EXISTS record_meta (
+            workbook TEXT NOT NULL,
+            citizen_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            data_hash TEXT NOT NULL,
+            PRIMARY KEY (workbook, citizen_id)
+        );
         CREATE TABLE IF NOT EXISTS records (
             id INTEGER PRIMARY KEY,
             row_number INTEGER NOT NULL,
@@ -204,7 +216,10 @@ def database_connection():
             citizen_id_key TEXT NOT NULL,
             data_json TEXT NOT NULL,
             type TEXT,
-            quarter TEXT
+            quarter TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS records_stt_idx ON records(stt);
         CREATE INDEX IF NOT EXISTS records_birth_year_idx ON records(birth_year_key);
@@ -229,6 +244,9 @@ def database_connection():
         connection.execute("ALTER TABLE records ADD COLUMN type TEXT")
     if "quarter" not in existing_columns:
         connection.execute("ALTER TABLE records ADD COLUMN quarter TEXT")
+    for column, definition in (("created_at", "TEXT"), ("updated_at", "TEXT"), ("is_deleted", "INTEGER NOT NULL DEFAULT 0")):
+        if column not in existing_columns:
+            connection.execute(f"ALTER TABLE records ADD COLUMN {column} {definition}")
     if "quarter" not in {row["name"] for row in connection.execute("PRAGMA table_info(record_types)")}:
         connection.execute("ALTER TABLE record_types ADD COLUMN quarter TEXT")
     if stale_tables:
@@ -262,6 +280,14 @@ def set_record_attribute(workbook, citizen_id, field, value):
     connection = database_connection()
     try:
         with connection:
+            previous = connection.execute(
+                f"SELECT {field} FROM record_types WHERE workbook = ? AND citizen_id = ?", (workbook, citizen_id)
+            ).fetchone()
+            if (previous[0] if previous else None) != (value or None):
+                connection.execute(
+                    "UPDATE record_meta SET updated_at = ? WHERE workbook = ? AND citizen_id = ?",
+                    (datetime.now().isoformat(timespec="seconds"), workbook, citizen_id),
+                )
             connection.execute(
                 "INSERT OR IGNORE INTO record_types (workbook, citizen_id) VALUES (?, ?)",
                 (workbook, citizen_id),
@@ -299,6 +325,13 @@ def move_record_owner(workbook, old_citizen_id, new_citizen_id):
                 "UPDATE record_files SET citizen_id = ? WHERE workbook = ? AND citizen_id = ?",
                 (new_citizen_id, str(workbook), old_citizen_id),
             )
+            connection.execute(
+                "DELETE FROM record_meta WHERE workbook = ? AND citizen_id = ?", (str(workbook), new_citizen_id)
+            )
+            connection.execute(
+                "UPDATE record_meta SET citizen_id = ? WHERE workbook = ? AND citizen_id = ?",
+                (new_citizen_id, str(workbook), old_citizen_id),
+            )
             # The status is one row per owner, so clear any stub already sitting on the new CCCD.
             connection.execute(
                 "DELETE FROM record_types WHERE workbook = ? AND citizen_id = ?",
@@ -307,26 +340,6 @@ def move_record_owner(workbook, old_citizen_id, new_citizen_id):
             connection.execute(
                 "UPDATE record_types SET citizen_id = ? WHERE workbook = ? AND citizen_id = ?",
                 (new_citizen_id, str(workbook), old_citizen_id),
-            )
-    finally:
-        connection.close()
-
-
-def add_record_files(workbook, citizen_id, source_name, pages):
-    """Store the rendered pages of one uploaded document against a record."""
-    created_at = datetime.now().isoformat()
-    connection = database_connection()
-    try:
-        with connection:
-            connection.executemany(
-                """
-                INSERT INTO record_files (workbook, citizen_id, source_name, page, image, thumbnail, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (str(workbook), display_value(citizen_id), source_name, number, image, thumbnail, created_at)
-                    for number, (image, thumbnail) in enumerate(pages, start=1)
-                ],
             )
     finally:
         connection.close()
@@ -377,6 +390,20 @@ def delete_record_file(workbook, citizen_id, file_id):
         connection.close()
 
 
+def set_records_deleted(workbook, citizen_ids, deleted):
+    """Soft-delete (or restore) records: the Excel row stays, the app just hides it."""
+    now = datetime.now().isoformat(timespec="seconds")
+    connection = database_connection()
+    try:
+        with connection:
+            connection.executemany(
+                "UPDATE record_meta SET is_deleted = ?, updated_at = ? WHERE workbook = ? AND citizen_id = ?",
+                [(1 if deleted else 0, now, str(workbook), display_value(citizen_id)) for citizen_id in citizen_ids],
+            )
+    finally:
+        connection.close()
+
+
 def cached_workbook_info(path, signature):
     try:
         connection = database_connection()
@@ -420,13 +447,19 @@ def sync_workbook_to_database(path):
             INSERT INTO records (
                 row_number, stt, name, birth_year, citizen_id, occupation, education, ethnicity, religion,
                 address, search_text, birth_year_key, occupation_key, education_key, ethnicity_key,
-                religion_key, address_key, citizen_id_key, data_json, type, quarter
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                religion_key, address_key, citizen_id_key, data_json, type, quarter, created_at, updated_at, is_deleted
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         count = 0
         batch = []
         loaded_at = datetime.now()
         stored_attributes = stored_record_attributes(connection, path)
+        stored_meta = {
+            row["citizen_id"]: row
+            for row in connection.execute("SELECT * FROM record_meta WHERE workbook = ?", (str(path),))
+        }
+        meta_rows = {}
+        now = loaded_at.isoformat(timespec="seconds")
         with connection:
             connection.execute("DELETE FROM records")
             for row_number, values in enumerate(sheet.iter_rows(min_row=3, values_only=True), start=3):
@@ -448,23 +481,44 @@ def sync_workbook_to_database(path):
                 # Quick search intentionally matches only the identity fields advertised by the UI.
                 # Advanced filters cover occupation, education, address, and the remaining profile data.
                 searchable = " ".join([stt, name, citizen_id])
+                data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                created_at = updated_at = None
+                is_deleted = 0
+                if citizen_id:
+                    # A record is new when its CCCD was never seen, and updated when its row no longer
+                    # matches what was seen last time, whether the change came from the app or from Excel.
+                    data_hash = hashlib.sha1(data_json.encode("utf-8")).hexdigest()
+                    known = stored_meta.get(citizen_id)
+                    if known is None:
+                        created_at = updated_at = now
+                    else:
+                        created_at = known["created_at"]
+                        updated_at = known["updated_at"] if known["data_hash"] == data_hash else now
+                        is_deleted = known["is_deleted"]
+                    meta_rows[citizen_id] = (str(path), citizen_id, created_at, updated_at, is_deleted, data_hash)
                 batch.append((
                     row_number, stt, name, birth_year, citizen_id, occupation, education, ethnicity, religion,
                     address, fold(searchable), fold(birth_year), fold(occupation), fold(education), fold(ethnicity),
                     fold(religion), fold(address), fold(citizen_id),
-                    json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+                    data_json,
                     # What the manager picked in the form wins: it is never written back to the
                     # workbook, so a stale "Diện" column must not overwrite it. That optional
                     # column is only a starting value for records nobody has set in the app yet.
                     stored_attributes.get(citizen_id, {}).get("type") or NvqsStatus.type_for(data.get("Diện", "")),
                     stored_attributes.get(citizen_id, {}).get("quarter"),
+                    created_at, updated_at, is_deleted,
                 ))
-                count += 1
+                count += 0 if is_deleted else 1
                 if len(batch) >= 500:
                     connection.executemany(insert_sql, batch)
                     batch.clear()
             if batch:
                 connection.executemany(insert_sql, batch)
+            connection.executemany(
+                "INSERT OR REPLACE INTO record_meta (workbook, citizen_id, created_at, updated_at, is_deleted, data_hash)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                meta_rows.values(),
+            )
             signature_after = file_signature(path)
             if signature_after != signature_before:
                 raise StaleWorkbookError("Tệp Excel thay đổi trong lúc đồng bộ. Hãy thử làm mới lại.")
@@ -490,9 +544,22 @@ def sync_workbook_to_database(path):
 def database_record_count():
     connection = database_connection()
     try:
-        return int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+        return int(connection.execute("SELECT COUNT(*) FROM records WHERE is_deleted = 0").fetchone()[0])
     finally:
         connection.close()
+
+
+def all_citizen_ids():
+    """Every CCCD in the workbook, soft-deleted records included."""
+    connection = database_connection()
+    try:
+        return {row[0] for row in connection.execute("SELECT citizen_id FROM records WHERE citizen_id <> ''")}
+    finally:
+        connection.close()
+
+
+def _display_time(value):
+    return datetime.fromisoformat(value).strftime("%d/%m/%Y %H:%M") if value else ""
 
 
 def row_to_record(row):
@@ -507,6 +574,9 @@ def row_to_record(row):
         "type": row["type"],
         "dien": NvqsStatus.value_for(row["type"]),
         "quarter": row["quarter"] or "",
+        "created_at": _display_time(row["created_at"]),
+        "updated_at": _display_time(row["updated_at"]),
+        "is_deleted": bool(row["is_deleted"]),
     }
 
 
@@ -532,22 +602,37 @@ def query_records(query, filters, limit, offset):
     if query_key:
         conditions.append("search_text LIKE ? ESCAPE '\\'")
         parameters.append(f"%{escaped_like(query_key)}%")
+    # Each of these filters takes a list of values; a record matches when it has any one of them.
     for key, (_, key_column) in FILTER_DB_COLUMNS.items():
-        value = fold(filters.get(key, ""))
-        if value:
-            conditions.append(f"{key_column} = ?")
-            parameters.append(value)
+        values = [value for value in (fold(item) for item in filters.get(key, [])) if value]
+        if values:
+            conditions.append(f"{key_column} IN ({', '.join('?' * len(values))})")
+            parameters.extend(values)
     address = fold(filters.get("address", ""))
     if address:
         conditions.append("address_key LIKE ? ESCAPE '\\'")
         parameters.append(f"%{escaped_like(address)}%")
-    dien = filters.get("dien", "")
-    if dien == UNSET_DIEN_FILTER:
-        conditions.append("(type IS NULL OR type = '')")
-    elif dien:
-        conditions.append("type = ?")
-        parameters.append(dien)
-    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    dien_codes = [code for code in filters.get("dien", []) if code and code != UNSET_DIEN_FILTER]
+    dien_conditions = []
+    if UNSET_DIEN_FILTER in filters.get("dien", []):
+        dien_conditions.append("(type IS NULL OR type = '')")
+    if dien_codes:
+        dien_conditions.append(f"type IN ({', '.join('?' * len(dien_codes))})")
+        parameters.extend(dien_codes)
+    if dien_conditions:
+        conditions.append(f"({' OR '.join(dien_conditions)})")
+    for key, column, operator in (
+        ("created_from", "created_at", ">="), ("created_to", "created_at", "<="),
+        ("updated_from", "updated_at", ">="), ("updated_to", "updated_at", "<="),
+    ):
+        if filters.get(key):
+            # The stored value is an ISO timestamp, so its first ten characters are the YYYY-MM-DD date.
+            conditions.append(f"substr({column}, 1, 10) {operator} ?")
+            parameters.append(filters[key])
+    # Soft-deleted records only show when asked for.
+    conditions.append("is_deleted = ?")
+    parameters.append(1 if filters.get("deleted") else 0)
+    where = f" WHERE {' AND '.join(conditions)}"
 
     connection = database_connection()
     try:
@@ -571,7 +656,7 @@ def query_filter_options(key):
             f"""
             SELECT {value_column} AS value, {key_column} AS normalized
             FROM records
-            WHERE {key_column} <> ''
+            WHERE {key_column} <> '' AND is_deleted = 0
             ORDER BY row_number
             """
         )
