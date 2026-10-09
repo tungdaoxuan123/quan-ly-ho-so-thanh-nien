@@ -20,6 +20,17 @@ Sau đó, nhấp đúp [Chạy Quản Lý Hồ Sơ.command](Chay%20Quan%20Ly%20H
 
 Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
 
+## Cho máy khác trong mạng nội bộ (LAN) dùng chung
+
+Mặc định ứng dụng chỉ mở trên máy đang chạy (`127.0.0.1`). Để máy khác trong cùng mạng truy cập:
+
+- **Windows:** nhấp đúp `Chay Quan Ly Ho So (LAN).bat`, đặt mật khẩu. Cửa sổ sẽ hiện địa chỉ dạng `http://192.168.x.x:8765`; nếu Windows hỏi về tường lửa, chọn *Private networks* → *Allow access*.
+- **Mac / dòng lệnh:** `QLHS_HOST=0.0.0.0 QLHS_PASSWORD=<mật khẩu> .venv/bin/python3 run.py`.
+
+Người dùng mở địa chỉ đó trên trình duyệt và nhập mật khẩu. Ứng dụng từ chối khởi động ở chế độ LAN nếu chưa đặt `QLHS_PASSWORD`, và chỉ nhận kết nối từ địa chỉ mạng nội bộ/riêng (dải `192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), không nhận từ Internet. Đặt `QLHS_PASSWORD` cũng bắt buộc đăng nhập cả khi chạy trên một máy.
+
+Lưu ý: mọi người dùng chung một tệp Excel và một cơ sở dữ liệu trên máy chạy ứng dụng, chưa có phân quyền theo người dùng, và chưa có cơ chế khóa khi nhiều người lưu cùng lúc. Các nút "Mở bằng Excel" / "Đổi tệp Excel" tác động lên máy chạy ứng dụng.
+
 ## Chạy trên Windows
 
 1. Trên máy Windows dùng để tạo gói, nhấp đúp `build_windows.bat`.

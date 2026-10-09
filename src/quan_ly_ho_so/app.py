@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import logging
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 import zipfile
 from datetime import datetime
@@ -26,6 +29,7 @@ from flask import (
     render_template_string,
     request,
     send_file,
+    session,
     send_from_directory,
     url_for,
 )
@@ -50,10 +54,10 @@ from quan_ly_ho_so.attachments import AttachmentError, document_thumbnail, prepa
 from quan_ly_ho_so.errors import StaleWorkbookError
 from quan_ly_ho_so.forms.enums import NvqsStatus
 from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
-from quan_ly_ho_so.security import csrf_token, valid_csrf
+from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
-from quan_ly_ho_so.web.templates import PAGE, page_url, render_form, render_preview
+from quan_ly_ho_so.web.templates import LOGIN_PAGE, PAGE, page_url, render_form, render_preview
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
     all_citizen_ids,
@@ -83,7 +87,33 @@ from quan_ly_ho_so.workbook.writer import append_people, save_person
 app = Flask(__name__)
 app.secret_key = os.environ.get("QUAN_LY_HO_SO_SECRET") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+# Set QLHS_PASSWORD to make everyone, even on this computer, sign in before using the app.
+app.config["ACCESS_PASSWORD"] = os.environ.get("QLHS_PASSWORD", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+@app.before_request
+def guard_access():
+    """Keep the app on the local network, and behind the shared password when one is set."""
+    if not is_local_network(request.remote_addr):
+        abort(403)
+    if app.config["ACCESS_PASSWORD"] and request.endpoint not in ("login", "static") and not session.get("signed_in"):
+        return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if valid_csrf(request.form.get("csrf_token")) and hmac.compare_digest(
+            password.encode("utf-8"), app.config["ACCESS_PASSWORD"].encode("utf-8")
+        ):
+            session["signed_in"] = True
+            return redirect(url_for("index"))
+        error = "Mật khẩu không đúng."
+        time.sleep(1)  # slows down guessing; the app is single-purpose and local, so the wait is harmless
+    return render_template_string(LOGIN_PAGE, csrf=csrf_token(), error=error)
 
 
 def valid_date(value):
@@ -803,12 +833,32 @@ def request_too_large(error):
     return redirect(url_for("index"))
 
 
+def lan_address():
+    """This computer's address on the local network, as other computers would reach it."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))  # UDP: nothing is sent, the OS just picks the outgoing interface
+        return probe.getsockname()[0]
+    except OSError as error:
+        logging.warning("Could not work out the LAN address: %s", error)
+        return "<địa chỉ IP của máy này>"
+    finally:
+        probe.close()
+
+
 def main():
     if not TEMPLATE.is_file():
         raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
+    # QLHS_HOST=0.0.0.0 opens the app to the local network; by default only this computer can reach it.
+    host = os.environ.get("QLHS_HOST", "127.0.0.1")
+    shared = host not in ("127.0.0.1", "localhost", "::1")
+    if shared and not app.config["ACCESS_PASSWORD"]:
+        raise SystemExit("Mở ứng dụng cho mạng LAN cần mật khẩu: hãy đặt biến môi trường QLHS_PASSWORD rồi chạy lại.")
     load_saved_workbook()
+    if shared:
+        logging.info("Máy khác trong mạng nội bộ vào bằng: http://%s:8765 (cần mật khẩu)", lan_address())
     threading.Timer(0.7, lambda: webbrowser.open("http://127.0.0.1:8765")).start()
-    app.run(host="127.0.0.1", port=8765, debug=False)
+    app.run(host=host, port=8765, debug=False)
 
 
 if __name__ == "__main__":

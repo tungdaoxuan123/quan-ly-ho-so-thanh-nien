@@ -1,6 +1,7 @@
 import re
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -328,6 +329,30 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertIn("Phạm Một Mình 1960,", second["data"].get(OTHER_INFO, ""))
         self.assertEqual(app.find_record("2")["name"], "TRẦN THỊ BÌNH")  # existing person untouched
         self.assertEqual(len(list(self.workbook_path.parent.glob("records.backup-*.xlsx"))), 1)
+
+    def test_access_is_limited_to_the_local_network_and_the_shared_password(self):
+        client = app.app.test_client()
+        self.assertEqual(client.get("/").status_code, 200)
+        self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "8.8.8.8"}).status_code, 403)
+        self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
+        self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "::ffff:8.8.8.8"}).status_code, 403)
+
+        app.app.config["ACCESS_PASSWORD"] = "bí-mật"
+        try:
+            with client, mock.patch.object(app.time, "sleep"):
+                locked = client.get("/")
+                self.assertEqual((locked.status_code, locked.headers["Location"]), (302, "/login"))
+                self.assertEqual(client.get("/person/1/edit").status_code, 302)
+                page = client.get("/login").get_data(as_text=True)
+                csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+                wrong = client.post("/login", data={"csrf_token": csrf, "password": "sai"})
+                self.assertIn("Mật khẩu không đúng", wrong.get_data(as_text=True))
+                self.assertEqual(client.get("/").status_code, 302)
+                right = client.post("/login", data={"csrf_token": csrf, "password": "bí-mật"})
+                self.assertEqual(right.status_code, 302)
+                self.assertEqual(client.get("/").status_code, 200)
+        finally:
+            app.app.config["ACCESS_PASSWORD"] = ""
 
     def test_filter_options_group_case_variations(self):
         options = app.query_filter_options("ethnicity")

@@ -652,6 +652,25 @@ def render_preview(title, record=None, values=None, errors=None, message=None):
     )
 
 
+LOGIN_PAGE = r"""
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Đăng nhập</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f2f5fa; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #1c2a44; }
+  form { background: #fff; border: 1px solid #d8e0ec; border-radius: 12px; padding: 28px; width: min(360px, 90vw); box-shadow: 0 10px 28px rgba(20,32,56,.12); display: flex; flex-direction: column; gap: 14px; }
+  h1 { margin: 0; font-size: 20px; } p { margin: 0; font-size: 13px; color: #5a6a86; }
+  label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
+  input { font: inherit; padding: 10px 12px; border: 1px solid #b7c3d8; border-radius: 8px; }
+  button { font: inherit; font-weight: 600; padding: 10px; border: 0; border-radius: 8px; background: #1d4f91; color: #fff; cursor: pointer; }
+  .error { color: #a3323b; font-size: 13px; }
+</style></head>
+<body><form method="post"><h1>Quản lý hồ sơ thanh niên</h1><p>Nhập mật khẩu để sử dụng ứng dụng.</p>
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<label>Mật khẩu<input type="password" name="password" autofocus required></label><button type="submit">Đăng nhập</button></form></body></html>
+"""
+
+
 def page_url(page_number, params):
     query = dict(params)
     query["page"] = page_number
