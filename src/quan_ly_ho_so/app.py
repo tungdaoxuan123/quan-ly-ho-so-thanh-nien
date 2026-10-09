@@ -4,14 +4,19 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import io
 import logging
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from flask import (
@@ -23,6 +28,8 @@ from flask import (
     redirect,
     render_template_string,
     request,
+    send_file,
+    session,
     send_from_directory,
     url_for,
 )
@@ -42,17 +49,18 @@ from quan_ly_ho_so.config import (
     QUARTER_CHOICES,
     UPLOAD_DIR,
 )
-from quan_ly_ho_so.attachments import AttachmentError, document_pages
+from quan_ly_ho_so import documents
+from quan_ly_ho_so.attachments import AttachmentError, document_thumbnail, prepare_document
 from quan_ly_ho_so.errors import StaleWorkbookError
 from quan_ly_ho_so.forms.enums import NvqsStatus
 from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
-from quan_ly_ho_so.security import csrf_token, valid_csrf
+from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
-from quan_ly_ho_so.web.templates import PAGE, page_url, render_form, render_preview
+from quan_ly_ho_so.web.templates import LOGIN_PAGE, PAGE, page_url, render_form, render_preview
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
-    add_record_files,
+    all_citizen_ids,
     database_record_count,
     delete_record_file,
     find_record,
@@ -61,9 +69,11 @@ from quan_ly_ho_so.workbook.cache import (
     query_filter_options,
     query_records,
     set_record_attribute,
+    set_records_deleted,
     set_record_type,
     signature_token,
 )
+from quan_ly_ho_so.workbook.ca_import import plan_import, read_ca_files
 from quan_ly_ho_so.workbook.dien_export import DIEN_TEMPLATES, build_dien_workbook
 from quan_ly_ho_so.workbook.list_export import build_list_workbook
 from quan_ly_ho_so.workbook.manager import (
@@ -72,12 +82,53 @@ from quan_ly_ho_so.workbook.manager import (
     refresh_state,
     set_workbook,
 )
-from quan_ly_ho_so.workbook.writer import save_person
+from quan_ly_ho_so.workbook.writer import append_people, save_person
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("QUAN_LY_HO_SO_SECRET") or secrets.token_hex(32)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
+# Set QLHS_PASSWORD to make everyone, even on this computer, sign in before using the app.
+app.config["ACCESS_PASSWORD"] = os.environ.get("QLHS_PASSWORD", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+@app.before_request
+def guard_access():
+    """Keep the app on the local network, and behind the shared password when one is set."""
+    if not is_local_network(request.remote_addr):
+        abort(403)
+    if app.config["ACCESS_PASSWORD"] and request.endpoint not in ("login", "static") and not session.get("signed_in"):
+        return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        if valid_csrf(request.form.get("csrf_token")) and hmac.compare_digest(
+            password.encode("utf-8"), app.config["ACCESS_PASSWORD"].encode("utf-8")
+        ):
+            session["signed_in"] = True
+            return redirect(url_for("index"))
+        error = "Mật khẩu không đúng."
+        time.sleep(1)  # slows down guessing; the app is single-purpose and local, so the wait is harmless
+    return render_template_string(LOGIN_PAGE, csrf=csrf_token(), error=error)
+
+
+def valid_date(value):
+    """Return `value` if it is a YYYY-MM-DD date (what <input type="date"> sends), else ""."""
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def pending_ca_report():
+    pending = state.get("import_pending")
+    if pending is None:
+        return None
+    return ca_report(pending, plan_import(pending["people"], all_citizen_ids()), preview=True)
 
 
 @app.get("/")
@@ -86,20 +137,20 @@ def index():
     if state["workbook"] is None:
         return render_template_string(PAGE, loaded=False, error=state["error"], csrf=csrf_token())
     query = request.args.get("q", "").strip()
-    filters = {
-        "birth_year": request.args.get("birth_year", "").strip(),
-        "occupation": request.args.get("occupation", "").strip(),
-        "education": request.args.get("education", "").strip(),
-        "ethnicity": request.args.get("ethnicity", "").strip(),
-        "religion": request.args.get("religion", "").strip(),
-        "address": request.args.get("address", "").strip(),
-        "dien": request.args.get("dien", "").strip(),
-    }
-    if filters["dien"] not in NvqsStatus.__members__ and filters["dien"] != UNSET_DIEN_FILTER:
-        filters["dien"] = ""
     options = {key: query_filter_options(key) for key in FILTER_DB_COLUMNS}
+    # Every option filter can carry several values; keep the canonical spelling of each and drop strangers.
+    filters = {}
     for key, values in options.items():
-        filters[key] = next((value for value in values if fold(value) == fold(filters[key])), filters[key])
+        wanted = {fold(value) for value in request.args.getlist(key)}
+        filters[key] = [value for value in values if fold(value) in wanted]
+    filters["address"] = request.args.get("address", "").strip()
+    for key in ("created_from", "created_to", "updated_from", "updated_to"):
+        filters[key] = valid_date(request.args.get(key, ""))
+    filters["deleted"] = "1" if request.args.get("deleted") == "1" else ""
+    filters["dien"] = [
+        code for code in dict.fromkeys(request.args.getlist("dien"))
+        if code in NvqsStatus.__members__ or code == UNSET_DIEN_FILTER
+    ]
     try:
         page = max(1, int(request.args.get("page", "1")))
     except ValueError:
@@ -139,6 +190,7 @@ def index():
         unset_dien=UNSET_DIEN_FILTER,
         selection_scope=f"{state['workbook']}:{state['sheet']}",
         quarter_choices=QUARTER_CHOICES,
+        import_report=state.pop("import_report", None) or pending_ca_report(),
     )
 
 
@@ -294,6 +346,7 @@ def save_person_route():
         )
         if record is not None:
             move_record_owner(state["workbook"], record["citizen_id"], citizen_id)
+            documents.move_documents(record["citizen_id"], citizen_id)
         if nvqs_type is not None and citizen_id:
             set_record_type(state["workbook"], citizen_id, nvqs_type)
         refresh_state(force=True)
@@ -401,16 +454,54 @@ def upload_record_file(stt):
         flash("Hãy chọn tệp tài liệu để tải lên.", "error")
         return redirect(url_for("edit_person", stt=stt))
     try:
-        pages = document_pages(upload.read(), upload.filename)
-        add_record_files(state["workbook"], citizen_id, secure_filename(upload.filename) or upload.filename, pages)
+        # Path().name drops any folder a browser may have sent along; the accents in the name stay.
+        filename, data = prepare_document(upload.read(), Path(upload.filename).name)
+        filename = documents.save_document(citizen_id, filename, data)
     except AttachmentError as error:
         flash(str(error), "error")
         return redirect(url_for("edit_person", stt=stt))
     except Exception as error:
-        logging.exception("Could not convert uploaded document: %s", error)
-        flash(f"Không thể chuyển tài liệu thành ảnh: {error}", "error")
+        logging.exception("Could not store uploaded document: %s", error)
+        flash(f"Không thể lưu tài liệu: {error}", "error")
         return redirect(url_for("edit_person", stt=stt))
-    flash(f"Đã thêm {len(pages)} trang tài liệu vào hồ sơ liên quan.", "success")
+    flash(f"Đã thêm tài liệu {filename} vào hồ sơ liên quan.", "success")
+    return redirect(url_for("edit_person", stt=stt))
+
+
+@app.get("/person/<stt>/documents/<name>")
+def record_document_file(stt, name):
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    citizen_id = owner_citizen_id(stt)
+    path = documents.document_path(citizen_id, name) if citizen_id else None
+    if path is None:
+        abort(404)
+    if request.args.get("size") == "thumb":
+        try:
+            thumbnail = document_thumbnail(path)
+        except AttachmentError as error:
+            logging.warning("No thumbnail for %s: %s", path.name, error)
+            abort(404)
+        response = send_file(io.BytesIO(thumbnail), mimetype="image/jpeg", etag=hashlib.sha1(thumbnail).hexdigest())
+    else:
+        response = send_file(path, as_attachment=request.args.get("download") == "1", download_name=path.name)
+    # Never let the browser reuse what a since-deleted document left behind at this address.
+    response.headers["Cache-Control"] = "private, no-cache"
+    return response
+
+
+@app.post("/person/<stt>/documents/<name>/delete")
+def remove_record_document(stt, name):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    citizen_id = owner_citizen_id(stt)
+    if citizen_id and documents.delete_document(citizen_id, name):
+        flash("Đã xóa tài liệu khỏi hồ sơ liên quan.", "success")
+    else:
+        flash("Không tìm thấy tài liệu cần xóa.", "error")
     return redirect(url_for("edit_person", stt=stt))
 
 
@@ -502,6 +593,133 @@ def bulk_update_quarter():
     return apply_to_selection("quarter", value, "Khu phố", value)
 
 
+def ca_report(pending, plan, backup="", preview=False):
+    """What the import page shows, both as a preview before adding and as the result afterwards."""
+    return {
+        "preview": preview,
+        "files": pending["files"],
+        "read": len(pending["people"]),
+        "backup": backup,
+        "errors": pending["errors"],
+        "counts": {key: len(value) for key, value in plan.items()},
+        "groups": [
+            ("Sẽ được thêm mới vào Excel tổng" if preview else "Đã thêm mới vào Excel tổng", plan["add"]),
+            ("Đã có trong Excel tổng — giữ nguyên, không cập nhật", plan["existing"]),
+            ("Không có số CCCD — bỏ qua, hãy bổ sung CCCD rồi nhập lại", plan["no_citizen_id"]),
+            ("Trùng CCCD ngay trong các tệp vừa chọn — chỉ lấy dòng đầu", plan["repeated"]),
+        ],
+    }
+
+
+@app.post("/import/ca")
+def import_ca_lists():
+    """Read the Ministry's khu phố lists and show who would be added; nothing is written yet."""
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    uploads = [upload for upload in request.files.getlist("ca_files") if upload.filename]
+    if not uploads:
+        flash("Hãy chọn ít nhất một tệp Excel của bộ CA.", "error")
+        return redirect(url_for("index"))
+    try:
+        people, file_errors = read_ca_files([(Path(upload.filename).name, upload.read()) for upload in uploads])
+    except Exception as error:
+        logging.exception("Could not read CA lists: %s", error)
+        flash(f"Không thể đọc file CA: {error}", "error")
+        return redirect(url_for("index"))
+    state["import_pending"] = {"files": len(uploads), "people": people, "errors": file_errors}
+    return redirect(url_for("index"))
+
+
+@app.post("/import/ca/confirm")
+def import_ca_confirm():
+    """Add the people from the previewed CA lists that the workbook still does not have."""
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    pending = state.get("import_pending")
+    if state["workbook"] is None or pending is None:
+        flash("Không có file CA nào đang chờ thêm. Hãy chọn lại tệp.", "error")
+        return redirect(url_for("index"))
+    try:
+        # Plan again: the workbook may have gained some of these people since the preview.
+        plan = plan_import(pending["people"], all_citizen_ids())
+        backup = None
+        if plan["add"]:
+            stts, backup = append_people(
+                state["workbook"], state["sheet"], [person["values"] for person in plan["add"]],
+                signature_token(state["signature"]),
+            )
+            for person, stt in zip(plan["add"], stts):
+                person["stt"] = stt
+                if person["quarter"]:
+                    # Saved before the refresh below, so the new records pick their khu phố up as they load.
+                    set_record_attribute(state["workbook"], person["citizen_id"], "quarter", person["quarter"])
+            refresh_state(force=True)
+    except Exception as error:
+        logging.exception("Could not import CA lists: %s", error)
+        flash(f"Không thể thêm người từ file CA: {error}", "error")
+        return redirect(url_for("index"))
+    state.pop("import_pending", None)
+    state["import_report"] = ca_report(pending, plan, backup.name if backup else "")
+    return redirect(url_for("index"))
+
+
+@app.post("/import/ca/cancel")
+def import_ca_cancel():
+    if valid_csrf(request.form.get("csrf_token")):
+        state.pop("import_pending", None)
+    return redirect(url_for("index"))
+
+
+def change_deleted_flag(deleted):
+    """Soft-delete or restore every ticked record, filed under each owner's CCCD."""
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
+        return redirect(url_for("index"))
+    refresh_state()
+    if state["workbook"] is None:
+        return redirect(url_for("index"))
+    selected_stt = request.form.getlist("stt")
+    if not selected_stt:
+        flash("Hãy chọn ít nhất một hồ sơ.", "error")
+        return redirect(url_for("index"))
+
+    citizen_ids, missing, without_citizen_id = [], [], []
+    for stt in selected_stt:
+        record = find_record(stt)
+        if record is None:
+            missing.append(stt)
+        elif not record["citizen_id"]:
+            without_citizen_id.append(stt)
+        else:
+            citizen_ids.append(record["citizen_id"])
+    if citizen_ids:
+        set_records_deleted(state["workbook"], citizen_ids, deleted)
+        refresh_state(force=True)
+        action = "Đã xóa" if deleted else "Đã khôi phục"
+        flash(f"{action} {len(citizen_ids)} hồ sơ." + (" Hồ sơ vẫn còn trong tệp Excel và có thể khôi phục." if deleted else ""), "success")
+    if without_citizen_id:
+        flash(f"Bỏ qua hồ sơ STT {', '.join(without_citizen_id)} vì chưa có số CCCD — trạng thái xóa được lưu theo số CCCD.", "error")
+    if missing:
+        flash(f"Không tìm thấy hồ sơ STT: {', '.join(missing)}. Hãy làm mới tệp Excel và thử lại.", "error")
+    return redirect(url_for("index"))
+
+
+@app.post("/bulk/delete")
+def bulk_delete():
+    return change_deleted_flag(True)
+
+
+@app.post("/bulk/restore")
+def bulk_restore():
+    return change_deleted_flag(False)
+
+
 @app.post("/export/batch")
 def export_batch_excel():
     if not valid_csrf(request.form.get("csrf_token")):
@@ -567,7 +785,7 @@ def export_by_dien():
             if not template.is_file():
                 missing_template.append(template.name)
                 continue
-            records, _ = query_records("", {"dien": code}, MAX_EXPORT_RECORDS, 0)
+            records, _ = query_records("", {"dien": [code]}, MAX_EXPORT_RECORDS, 0)
             if not records:
                 empty.append(label)
                 continue
@@ -615,12 +833,32 @@ def request_too_large(error):
     return redirect(url_for("index"))
 
 
+def lan_address():
+    """This computer's address on the local network, as other computers would reach it."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("10.255.255.255", 1))  # UDP: nothing is sent, the OS just picks the outgoing interface
+        return probe.getsockname()[0]
+    except OSError as error:
+        logging.warning("Could not work out the LAN address: %s", error)
+        return "<địa chỉ IP của máy này>"
+    finally:
+        probe.close()
+
+
 def main():
     if not TEMPLATE.is_file():
         raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
+    # QLHS_HOST=0.0.0.0 opens the app to the local network; by default only this computer can reach it.
+    host = os.environ.get("QLHS_HOST", "127.0.0.1")
+    shared = host not in ("127.0.0.1", "localhost", "::1")
+    if shared and not app.config["ACCESS_PASSWORD"]:
+        raise SystemExit("Mở ứng dụng cho mạng LAN cần mật khẩu: hãy đặt biến môi trường QLHS_PASSWORD rồi chạy lại.")
     load_saved_workbook()
+    if shared:
+        logging.info("Máy khác trong mạng nội bộ vào bằng: http://%s:8765 (cần mật khẩu)", lan_address())
     threading.Timer(0.7, lambda: webbrowser.open("http://127.0.0.1:8765")).start()
-    app.run(host="127.0.0.1", port=8765, debug=False)
+    app.run(host=host, port=8765, debug=False)
 
 
 if __name__ == "__main__":
