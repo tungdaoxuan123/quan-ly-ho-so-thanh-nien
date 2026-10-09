@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from quan_ly_ho_so.config import CACHE_SEARCH_SCOPE, FILTER_DB_COLUMNS, SUPPORTED_SUFFIXES
+from quan_ly_ho_so.config import CACHE_SEARCH_SCOPE, DELETED_AT_HEADER, FILTER_DB_COLUMNS, SUPPORTED_SUFFIXES
 from quan_ly_ho_so.errors import StaleWorkbookError, WorkbookError
 from quan_ly_ho_so.state import current_database_path, state
 from quan_ly_ho_so.utils.text import display_value, fold, normalized_header
@@ -138,6 +138,8 @@ def sync_workbook_to_database(path):
         if "STT" not in headers or "TÊN THƯỜNG DÙNG" not in headers:
             raise WorkbookError("Hàng 1 của tệp Excel phải có cột STT và TÊN THƯỜNG DÙNG.")
 
+        deleted_at_column = headers.get(normalized_header(DELETED_AT_HEADER))
+
         connection = database_connection()
         insert_sql = """
             INSERT INTO records (
@@ -160,6 +162,10 @@ def sync_workbook_to_database(path):
                 name = data.get("TÊN THƯỜNG DÙNG", "")
                 if not stt or not name:
                     continue
+                if deleted_at_column and deleted_at_column <= len(values):
+                    deleted_at = display_value(values[deleted_at_column - 1])
+                    if deleted_at:
+                        continue  # Skip soft-deleted records
                 birth_year = data.get("Năm sinh", "")
                 citizen_id = data.get("Căn cước", "")
                 occupation = data.get("Nghề nghiệp", "")
@@ -229,6 +235,22 @@ def find_record(stt):
     try:
         row = connection.execute(
             "SELECT * FROM records WHERE stt = ? ORDER BY row_number LIMIT 1", (display_value(stt),)
+        ).fetchone()
+        return row_to_record(row) if row is not None else None
+    finally:
+        connection.close()
+
+
+def find_record_by_citizen_id(citizen_id):
+    """Look up a record by citizen ID (CCCD)."""
+    citizen_id = display_value(citizen_id).strip()
+    if not citizen_id:
+        return None
+    connection = database_connection()
+    try:
+        row = connection.execute(
+            "SELECT * FROM records WHERE citizen_id_key = ? ORDER BY row_number LIMIT 1",
+            (fold(citizen_id),),
         ).fetchone()
         return row_to_record(row) if row is not None else None
     finally:

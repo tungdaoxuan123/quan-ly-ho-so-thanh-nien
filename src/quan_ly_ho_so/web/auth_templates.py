@@ -548,6 +548,7 @@ ADMIN_PAGE = r"""
       <p class="muted">Quản lý danh sách tài khoản, đặt lại mật khẩu và phân quyền thao tác dữ liệu</p>
     </div>
     <div class="actions">
+      <a class="button secondary" href="{{ url_for('admin_audit_log') }}">Nhật ký hoạt động</a>
       <a class="button secondary" href="{{ url_for('index') }}">← Về trang tra cứu hồ sơ</a>
       <a class="button secondary" href="{{ url_for('user_profile') }}">Tài khoản & Quyền hạn</a>
       <a class="button secondary" href="{{ url_for('logout') }}">Đăng xuất</a>

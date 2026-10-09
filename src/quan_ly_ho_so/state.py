@@ -49,6 +49,10 @@ def settings_path():
     for directory in (preferred, *fallbacks):
         try:
             directory.mkdir(parents=True, exist_ok=True)
+            # Verify directory is actually writable
+            test_file = directory / ".write_test"
+            test_file.write_text("ok", encoding="utf-8")
+            test_file.unlink(missing_ok=True)
         except OSError as error:
             logging.warning("Cannot use application-data folder %s: %s", directory, error)
             continue

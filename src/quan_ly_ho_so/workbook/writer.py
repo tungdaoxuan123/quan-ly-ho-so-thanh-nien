@@ -10,6 +10,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from quan_ly_ho_so.config import DELETED_AT_HEADER
 from quan_ly_ho_so.errors import StaleWorkbookError, WorkbookBusyError, WorkbookError
 from quan_ly_ho_so.state import state_lock
 from quan_ly_ho_so.utils.text import display_value, normalized_header
@@ -160,7 +161,12 @@ def delete_person(path, sheet_name, stt, expected_signature):
         if target_row is None:
             raise StaleWorkbookError("Hồ sơ không còn trong tệp Excel. Hãy làm mới và thử lại.")
 
-        sheet.delete_rows(target_row, 1)
+        deleted_at_col = headers.get(normalized_header(DELETED_AT_HEADER))
+        if not deleted_at_col:
+            deleted_at_col = sheet.max_column + 1
+            sheet.cell(1, deleted_at_col).value = DELETED_AT_HEADER
+
+        sheet.cell(target_row, deleted_at_col).value = datetime.now().isoformat()
 
         backup_name = unique_backup_path(path)
         with tempfile.NamedTemporaryFile(prefix=f".{path.stem}-", suffix=path.suffix, dir=path.parent, delete=False) as temporary:

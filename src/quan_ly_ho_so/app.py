@@ -47,25 +47,30 @@ from quan_ly_ho_so.config import (
     TEMPLATE,
     UPLOAD_DIR,
 )
+from quan_ly_ho_so.audit import compute_changes, get_audit_logs, log_action
 from quan_ly_ho_so.errors import StaleWorkbookError
-from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
+from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, form_values, validate_form_values
 from quan_ly_ho_so.security import csrf_token, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
 from quan_ly_ho_so.web.templates import (
     ADMIN_PAGE,
+    AUDIT_LOG_PAGE,
     FORCE_CHANGE_PASSWORD_PAGE,
+    GUEST_PAGE,
     LOGIN_PAGE,
     PAGE,
     PROFILE_PAGE,
     page_url,
     render_form,
+    render_guest_form,
     render_preview,
 )
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
     database_record_count,
     find_record,
+    find_record_by_citizen_id,
     query_filter_options,
     query_records,
     signature_token,
@@ -92,7 +97,7 @@ def inject_user():
 
 @app.before_request
 def require_authentication():
-    exempt_endpoints = {"login", "login_post", "logout", "static"}
+    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_save"}
     if request.endpoint in exempt_endpoints or request.endpoint is None:
         return None
     user = current_user()
@@ -603,11 +608,23 @@ def save_person_route():
         return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=validation_errors)
 
     headers_by_column = {definition["column"]: definition["header"] for definition in definitions}
+    labels_by_name = {definition["name"]: definition["header"] for definition in definitions}
+    old_form_values = form_values(record) if record else {}
     updates = {column: coerce_cell_value(headers_by_column[column], raw) for column, raw in values_by_column.items()}
     try:
         row, stt, backup = save_person(
             state["workbook"], state["sheet"], updates, request.form.get("signature", ""), original_stt=original_stt,
         )
+        # Audit logging
+        username = user.get("username", "unknown")
+        name_column = state["headers"].get("TÊN THƯỜNG DÙNG")
+        record_name = values.get(f"column_{name_column}", "") if name_column else ""
+        if original_stt:
+            changes = compute_changes(old_form_values, values, labels_by_name)
+            if changes:
+                log_action(username, "update", str(stt), record_name, {"changes": changes})
+        else:
+            log_action(username, "create", str(stt), record_name, {"fields": {labels_by_name.get(k, k): v for k, v in values.items() if v}})
         refresh_state(force=True)
         flash(f"Đã lưu hồ sơ STT {stt}. Bản sao lưu: {backup.name}", "success")
         return redirect(url_for("index"))
@@ -635,8 +652,11 @@ def delete_person_route(stt):
         row, deleted_stt, backup = delete_person(
             state["workbook"], state["sheet"], stt, request.form.get("signature", "")
         )
+        # Audit logging
+        username = current_user().get("username", "unknown")
+        log_action(username, "delete", str(deleted_stt), record["name"], {"reason": "soft_delete"})
         refresh_state(force=True)
-        flash(f"Đã xóa hồ sơ STT {deleted_stt}. Bản sao lưu: {backup.name}", "success")
+        flash(f"Đã xóa hồ sơ STT {deleted_stt} (xóa mềm). Bản sao lưu: {backup.name}", "success")
         return redirect(url_for("index"))
     except Exception as error:
         logging.exception("Could not delete record: %s", error)
@@ -728,9 +748,112 @@ def download(filename):
     return send_from_directory(output_dir, filename, as_attachment=True)
 
 
+@app.get("/tra-cuu")
+def guest_lookup():
+    refresh_state()
+    if state["workbook"] is None:
+        return render_template_string(
+            GUEST_PAGE,
+            mode=None, cccd="", record=None, sections=[], values={}, errors=[], 
+            signature="", csrf=csrf_token(), cccd_field_name="",
+        )
+    return render_guest_form(mode=None, cccd="")
+
+
+@app.post("/tra-cuu")
+def guest_lookup_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Vui lòng nhập số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    record = find_record_by_citizen_id(cccd)
+    if record:
+        return render_guest_form(mode="readonly", cccd=cccd, record=record)
+    else:
+        return render_guest_form(mode="create", cccd=cccd)
+
+
+@app.post("/tra-cuu/save")
+def guest_save():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    if state["workbook"].suffix.lower() == ".xlsm":
+        flash("Hệ thống không hỗ trợ lưu hồ sơ vào tệp .xlsm.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Thiếu số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    # Check if CCCD already exists (prevent duplicate)
+    existing = find_record_by_citizen_id(cccd)
+    if existing:
+        flash("Hồ sơ với số CCCD này đã tồn tại.", "error")
+        return render_guest_form(mode="readonly", cccd=cccd, record=existing)
+    definitions = field_definitions()
+    values = {definition["name"]: request.form.get(definition["name"], "") for definition in definitions}
+    values_by_column = {definition["column"]: values[definition["name"]] for definition in definitions}
+    values_for_validation = {column: raw for column, raw in values_by_column.items()}
+    values_for_validation["__original_stt"] = ""
+    validation_errors = validate_form_values(values_for_validation)
+    if validation_errors:
+        return render_guest_form(mode="create", cccd=cccd, values=values, errors=validation_errors)
+    headers_by_column = {definition["column"]: definition["header"] for definition in definitions}
+    updates = {column: coerce_cell_value(headers_by_column[column], raw) for column, raw in values_by_column.items()}
+    try:
+        row, stt, backup = save_person(
+            state["workbook"], state["sheet"], updates, request.form.get("signature", ""),
+        )
+        refresh_state(force=True)
+        flash(f"Đã tạo hồ sơ thành công (STT {stt}). Cảm ơn bạn!", "success")
+        # After saving, look up the new record and show it in readonly mode
+        new_record = find_record_by_citizen_id(cccd)
+        if new_record:
+            return render_guest_form(mode="readonly", cccd=cccd, record=new_record)
+        return redirect(url_for("guest_lookup"))
+    except Exception as error:
+        logging.exception("Guest could not save record: %s", error)
+        return render_guest_form(mode="create", cccd=cccd, values=values, errors=[str(error)])
+
+
 @app.errorhandler(413)
 def request_too_large(error):
     return redirect(url_for("index"))
+
+
+@app.get("/admin/audit-log")
+@auth_required(role="admin")
+def admin_audit_log():
+    from quan_ly_ho_so.audit import get_audit_logs
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    stt = request.args.get("stt", "").strip() or None
+    per_page = 50
+    entries, total = get_audit_logs(limit=per_page, offset=(page - 1) * per_page, stt=stt)
+    pages = max(1, (total + per_page - 1) // per_page)
+    return render_template_string(
+        AUDIT_LOG_PAGE,
+        entries=entries,
+        total=total,
+        page=page,
+        pages=pages,
+        stt=stt,
+        csrf=csrf_token(),
+        current_user=current_user(),
+    )
 
 
 def main():

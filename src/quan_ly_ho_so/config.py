@@ -18,7 +18,8 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 TEMPLATE = BASE_DIR / "Mau_Ho_So_Thanh_Nien.docx"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
-CACHE_SEARCH_SCOPE = "identity-v1"
+CACHE_SEARCH_SCOPE = "identity-v2"
+DELETED_AT_HEADER = "Đã xóa lúc"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 FILTER_DB_COLUMNS = {
     "birth_year": ("birth_year", "birth_year_key"),
