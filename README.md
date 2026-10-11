@@ -20,16 +20,26 @@ Sau đó, nhấp đúp [Chạy Quản Lý Hồ Sơ.command](Chay%20Quan%20Ly%20H
 
 Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
 
-## Cho máy khác trong mạng nội bộ (LAN) dùng chung
+## Tài khoản, phân quyền và dùng chung trong mạng nội bộ (LAN)
+
+Ứng dụng yêu cầu đăng nhập. Lần đầu chạy tạo tài khoản quản trị `admin` (mật khẩu mặc định `admin123` — **hãy đổi ngay**; xem `.env.example`). Quản trị viên tạo người dùng tại **Quản trị**, chọn nhanh mẫu quyền hoặc tích từng quyền:
+
+- **Toàn quyền:** tạo, xem, sửa, xóa, xuất file.
+- **Chỉ xem và in:** chỉ quyền *Xem* — xem hồ sơ, xem trước, tạo Word (in); không xuất Excel, không sửa.
+- **Cập nhật:** *Tạo + Xem + Sửa*. Quyền *Xuất file* (Excel hàng loạt, Excel theo diện) và *Xóa* tích riêng.
+
+Mọi thao tác ghi (sửa, thêm, xóa/khôi phục, sửa hàng loạt, nhập file CA, tải tài liệu, xuất Excel) được ghi vào nhật ký theo người dùng; quản trị viên xem tại **Nhật ký**. Quyền được nạp lúc đăng nhập: sau khi đổi quyền, người đó cần đăng nhập lại.
+
+Khách (không cần tài khoản) vào `/tra-cuu`, nhập số CCCD: nếu chưa có thì điền form tạo hồ sơ mới, nếu đã có thì chỉ được xem — khách không sửa được.
 
 Mặc định ứng dụng chỉ mở trên máy đang chạy (`127.0.0.1`). Để máy khác trong cùng mạng truy cập:
 
-- **Windows:** nhấp đúp `Chay Quan Ly Ho So (LAN).bat`, đặt mật khẩu. Cửa sổ sẽ hiện địa chỉ dạng `http://192.168.x.x:8765`; nếu Windows hỏi về tường lửa, chọn *Private networks* → *Allow access*.
-- **Mac / dòng lệnh:** `QLHS_HOST=0.0.0.0 QLHS_PASSWORD=<mật khẩu> .venv/bin/python3 run.py`.
+- **Windows:** nhấp đúp `Chay Quan Ly Ho So (LAN).bat`. Cửa sổ sẽ hiện địa chỉ dạng `http://192.168.x.x:8765`; nếu Windows hỏi về tường lửa, chọn *Private networks* → *Allow access*.
+- **Mac / dòng lệnh:** `QLHS_HOST=0.0.0.0 .venv/bin/python3 run.py`.
 
-Người dùng mở địa chỉ đó trên trình duyệt và nhập mật khẩu. Ứng dụng từ chối khởi động ở chế độ LAN nếu chưa đặt `QLHS_PASSWORD`, và chỉ nhận kết nối từ địa chỉ mạng nội bộ/riêng (dải `192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), không nhận từ Internet. Đặt `QLHS_PASSWORD` cũng bắt buộc đăng nhập cả khi chạy trên một máy.
+Ứng dụng từ chối mở cho LAN nếu tài khoản quản trị vẫn dùng mật khẩu mặc định, và chỉ nhận kết nối từ địa chỉ mạng nội bộ/riêng (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), không nhận từ Internet.
 
-Lưu ý: mọi người dùng chung một tệp Excel và một cơ sở dữ liệu trên máy chạy ứng dụng, chưa có phân quyền theo người dùng, và chưa có cơ chế khóa khi nhiều người lưu cùng lúc. Các nút "Mở bằng Excel" / "Đổi tệp Excel" tác động lên máy chạy ứng dụng.
+Lưu ý: mọi người dùng chung một tệp Excel và một cơ sở dữ liệu trên máy chạy ứng dụng; chưa có cơ chế khóa khi nhiều người lưu cùng lúc. Các nút "Mở bằng Excel" / "Đổi tệp Excel" tác động lên máy chạy ứng dụng.
 
 ## Chạy trên Windows
 

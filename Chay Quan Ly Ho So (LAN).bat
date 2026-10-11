@@ -3,13 +3,9 @@ setlocal
 set "APP_DIR=%~dp0"
 
 echo Mo ung dung cho cac may khac trong cung mang noi bo (LAN).
-echo Moi may phai nhap mat khau nay moi vao duoc.
-set /p "QLHS_PASSWORD=Dat mat khau: "
-if "%QLHS_PASSWORD%"=="" (
-  echo Can nhap mat khau.
-  pause
-  exit /b 1
-)
+echo Moi nguoi phai dang nhap bang tai khoan do quan tri vien tao.
+echo Quan tri vien phai doi mat khau mac dinh (admin123) truoc, bang cach chay
+echo "Chay Quan Ly Ho So.bat" mot lan, dang nhap admin va doi mat khau.
 set "QLHS_HOST=0.0.0.0"
 echo.
 echo Cua so ung dung se hien dia chi cho may khac (dang http://192.168.x.x:8765).

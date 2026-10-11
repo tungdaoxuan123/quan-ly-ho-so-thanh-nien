@@ -591,6 +591,22 @@ def find_record(stt):
         connection.close()
 
 
+def find_record_by_citizen_id(citizen_id):
+    """Look up a record by citizen ID (CCCD)."""
+    citizen_id = display_value(citizen_id).strip()
+    if not citizen_id:
+        return None
+    connection = database_connection()
+    try:
+        row = connection.execute(
+            "SELECT * FROM records WHERE citizen_id_key = ? ORDER BY row_number LIMIT 1",
+            (fold(citizen_id),),
+        ).fetchone()
+        return row_to_record(row) if row is not None else None
+    finally:
+        connection.close()
+
+
 def escaped_like(value):
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 

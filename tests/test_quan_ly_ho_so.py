@@ -1,3 +1,4 @@
+import tests
 import re
 import tempfile
 import unittest
@@ -7,7 +8,9 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 import quan_ly_ho_so.app as app
+from quan_ly_ho_so.auth import set_auth_database_path
 from quan_ly_ho_so.word.export import generate_document
+
 
 
 TEMPLATE = Path(__file__).resolve().parent.parent / "Mau_Ho_So_Thanh_Nien.docx"
@@ -73,10 +76,19 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.workbook_path = Path(self.temp_dir.name) / "records.xlsx"
         self.previous_database = app.state["database"]
         app.state["database"] = Path(self.temp_dir.name) / "cache.sqlite3"
+        set_auth_database_path(Path(self.temp_dir.name) / "users.db")
         self.header_count = create_test_workbook(self.workbook_path)
         app.set_workbook(self.workbook_path, persist=False)
 
+    def admin_client(self):
+        """A test client already signed in as the administrator (every route needs an account now)."""
+        client = app.app.test_client()
+        with client.session_transaction() as session:
+            session.update(user_id=1, username="admin", role="admin", permissions={}, must_change_password=False)
+        return client
+
     def tearDown(self):
+        set_auth_database_path(None)
         app.state.update(
             workbook=None,
             sheet=None,
@@ -126,7 +138,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertEqual(narrowed, both)
 
     def test_index_page_keeps_several_selected_filter_values(self):
-        response = app.app.test_client().get("/?occupation=Sinh viên&occupation=Nông dân")
+        response = self.admin_client().get("/?occupation=Sinh viên&occupation=Nông dân")
         html = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(html.count('name="occupation" value="Sinh viên" checked'), 1)
@@ -167,7 +179,7 @@ class QuanLyHoSoTests(unittest.TestCase):
             )
 
         folder = Path(self.temp_dir.name) / "Tài liệu liên quan"
-        client = app.app.test_client()
+        client = self.admin_client()
         with client, mock.patch.object(attachments, "_word_to_pdf", fake_word_to_pdf), \
                 mock.patch.object(documents, "DOCUMENT_DIR", folder):
             form_text = client.get("/person/1/edit").get_data(as_text=True)
@@ -228,7 +240,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertEqual(app.query_records("", {"updated_from": today}, limit=50, offset=0)[1], 2)
 
     def test_bulk_delete_hides_records_and_restore_brings_them_back(self):
-        client = app.app.test_client()
+        client = self.admin_client()
         with client:
             form_text = client.get("/person/1/edit").get_data(as_text=True)
             csrf = re.search(r'name="csrf_token" value="([^"]+)"', form_text).group(1)
@@ -279,7 +291,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         content = io.BytesIO()
         ca.save(content)
 
-        client = app.app.test_client()
+        client = self.admin_client()
         with client:
             form_text = client.get("/person/1/edit").get_data(as_text=True)
             csrf = re.search(r'name="csrf_token" value="([^"]+)"', form_text).group(1)
@@ -330,29 +342,17 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertEqual(app.find_record("2")["name"], "TRẦN THỊ BÌNH")  # existing person untouched
         self.assertEqual(len(list(self.workbook_path.parent.glob("records.backup-*.xlsx"))), 1)
 
-    def test_access_is_limited_to_the_local_network_and_the_shared_password(self):
+    def test_access_is_limited_to_the_local_network_and_needs_an_account(self):
         client = app.app.test_client()
-        self.assertEqual(client.get("/").status_code, 200)
         self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "8.8.8.8"}).status_code, 403)
-        self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
-        self.assertEqual(client.get("/", environ_overrides={"REMOTE_ADDR": "::ffff:8.8.8.8"}).status_code, 403)
-
-        app.app.config["ACCESS_PASSWORD"] = "bí-mật"
-        try:
-            with client, mock.patch.object(app.time, "sleep"):
-                locked = client.get("/")
-                self.assertEqual((locked.status_code, locked.headers["Location"]), (302, "/login"))
-                self.assertEqual(client.get("/person/1/edit").status_code, 302)
-                page = client.get("/login").get_data(as_text=True)
-                csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
-                wrong = client.post("/login", data={"csrf_token": csrf, "password": "sai"})
-                self.assertIn("Mật khẩu không đúng", wrong.get_data(as_text=True))
-                self.assertEqual(client.get("/").status_code, 302)
-                right = client.post("/login", data={"csrf_token": csrf, "password": "bí-mật"})
-                self.assertEqual(right.status_code, 302)
-                self.assertEqual(client.get("/").status_code, 200)
-        finally:
-            app.app.config["ACCESS_PASSWORD"] = ""
+        self.assertEqual(client.get("/login", environ_overrides={"REMOTE_ADDR": "8.8.8.8"}).status_code, 403)
+        self.assertEqual(client.get("/tra-cuu", environ_overrides={"REMOTE_ADDR": "::ffff:8.8.8.8"}).status_code, 403)
+        self.assertEqual(client.get("/login", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
+        self.assertEqual(client.get("/tra-cuu", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
+        locked = client.get("/")
+        self.assertEqual(locked.status_code, 302)
+        self.assertIn("/login", locked.headers["Location"])
+        self.assertEqual(self.admin_client().get("/").status_code, 200)
 
     def test_filter_options_group_case_variations(self):
         options = app.query_filter_options("ethnicity")
@@ -417,6 +417,16 @@ class QuanLyHoSoTests(unittest.TestCase):
     def test_browser_routes_and_word_generation(self):
         client = app.app.test_client()
         with client:
+            unauth = client.get("/")
+            self.assertEqual(unauth.status_code, 302)
+            self.assertIn("/login", unauth.headers.get("Location", ""))
+
+            login_page = client.get("/login")
+            self.assertEqual(login_page.status_code, 200)
+            csrf_login = re.search(r'name="csrf_token" value="([^"]+)"', login_page.get_data(as_text=True)).group(1)
+            login_resp = client.post("/login", data={"username": "admin", "password": "admin123", "csrf_token": csrf_login})
+            self.assertEqual(login_resp.status_code, 302)
+
             response = client.get("/")
             self.assertEqual(response.status_code, 200)
             self.assertIn(b"PHAN TR", response.data)
@@ -443,6 +453,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertTrue(first.is_file())
         self.assertTrue(second.is_file())
         self.assertNotEqual(first, second)
+
 
 
 if __name__ == "__main__":

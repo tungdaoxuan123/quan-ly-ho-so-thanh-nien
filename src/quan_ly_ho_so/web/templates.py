@@ -9,6 +9,12 @@ from quan_ly_ho_so.security import csrf_token
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
 from quan_ly_ho_so.documents import list_documents
+from quan_ly_ho_so.web.auth_templates import (
+    ADMIN_PAGE,
+    FORCE_CHANGE_PASSWORD_PAGE,
+    LOGIN_PAGE,
+    PROFILE_PAGE,
+)
 from quan_ly_ho_so.workbook.cache import record_files, signature_token
 
 BASE_CSS = r"""
@@ -19,6 +25,7 @@ BASE_CSS = r"""
     .topbar { background: #12294b; } .topbar-inner { max-width: 1240px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; gap: 14px; }
     .brand-mark { width: 38px; height: 38px; border-radius: 10px; background: rgba(255,255,255,.14); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 14px; letter-spacing: .04em; }
     .topbar h1 { color: #fff; font-size: 17px; margin: 0; } .topbar-sub { font-size: 12.5px; color: #b9c7de; }
+    .user-nav { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: #dbe5f5; font-size: 13.5px; } .user-nav a { color: #fff; text-decoration: none; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; padding: 5px 10px; } .user-nav a:hover { background: rgba(255,255,255,.14); }
     .container { max-width: 1240px; margin: 0 auto; padding: 24px 28px 48px; }
     .muted, .status { color: var(--muted); } .status { font-size: 14px; } .required { color: #b3261e; }
     label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 13.5px; color: #2b3852; }
@@ -113,7 +120,7 @@ PAGE = r"""
   </style>
 </head>
 <body>
-  <header class="topbar"><div class="topbar-inner"><span class="brand-mark">HS</span><div><h1>Quản lý hồ sơ thanh niên</h1><div class="topbar-sub">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</div></div></div></header>
+  <header class="topbar"><div class="topbar-inner"><span class="brand-mark">HS</span><div><h1>Quản lý hồ sơ thanh niên</h1><div class="topbar-sub">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</div></div>{% if current_user %}<div class="user-nav"><span>Xin chào, <strong>{{ current_user.username }}</strong>{% if current_user.is_admin %} · Quản trị viên{% endif %}</span><a href="{{ url_for('user_profile') }}">Tài khoản &amp; quyền</a>{% if current_user.is_admin %}<a href="{{ url_for('admin_dashboard') }}">Quản trị</a><a href="{{ url_for('admin_audit_log') }}">Nhật ký</a>{% endif %}<a href="{{ url_for('logout') }}">Đăng xuất</a></div>{% endif %}</div></header>
   <main class="container">
   {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ 'error' if category == 'error' else '' }}">{{ message }}</p>{% endfor %}{% endwith %}
   {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
@@ -122,14 +129,18 @@ PAGE = r"""
       <details class="advanced"><summary>Hoặc tải lên bản sao tệp Excel</summary><form class="panel" action="{{ url_for('load_uploaded_workbook') }}" method="post" enctype="multipart/form-data"><label>Tệp Excel<input type="file" name="workbook" accept=".xlsx,.xlsm" required></label><p><button type="submit">Dùng bản sao đã tải lên</button></p></form></details>
     </section>
   {% else %}
-    <section class="card summary"><div><div class="file-name">{{ workbook_name }}</div><div class="meta"><span class="chip">Trang tính: {{ sheet_name }}</span><span class="chip">{{ record_count }} hồ sơ</span><span class="chip">Đồng bộ SQLite lúc {{ loaded_at }}</span></div></div><div class="actions"><a class="button secondary" href="{{ url_for('refresh') }}">Làm mới</a><a class="button secondary" href="{{ url_for('open_excel') }}">Mở bằng Excel</a><a class="button secondary" href="{{ url_for('choose_workbook') }}">Đổi tệp Excel</a><button type="button" class="secondary" id="import-ca-btn"{% if read_only %} disabled{% endif %}>Nhập file CA</button><a class="button" href="{{ url_for('new_person') }}">Thêm hồ sơ</a></div></section>
+    <section class="card summary"><div><div class="file-name">{{ workbook_name }}</div><div class="meta"><span class="chip">Trang tính: {{ sheet_name }}</span><span class="chip">{{ record_count }} hồ sơ</span><span class="chip">Đồng bộ SQLite lúc {{ loaded_at }}</span></div></div><div class="actions"><a class="button secondary" href="{{ url_for('refresh') }}">Làm mới</a><a class="button secondary" href="{{ url_for('open_excel') }}">Mở bằng Excel</a><a class="button secondary" href="{{ url_for('choose_workbook') }}">Đổi tệp Excel</a>{% if current_user.can_create %}<button type="button" class="secondary" id="import-ca-btn"{% if read_only %} disabled{% endif %}>Nhập file CA</button><a class="button" href="{{ url_for('new_person') }}">Thêm hồ sơ</a>{% endif %}</div></section>
+    {% if current_user and not current_user.can_read %}<section class="card"><h2>Không có quyền xem dữ liệu</h2><p class="notice error">Tài khoản của bạn chưa được cấp quyền xem dữ liệu hồ sơ. Vui lòng liên hệ Quản trị viên.</p></section>{% endif %}
     {% if import_report %}<section class="card import-report"><h2>{% if import_report.preview %}Xem trước file CA — chưa thêm gì vào Excel tổng{% else %}Kết quả nhập file CA{% endif %}</h2><p>Đã đọc {{ import_report.read }} người từ {{ import_report.files }} tệp: <strong>{{ import_report.counts.add }} {% if import_report.preview %}sẽ được thêm mới{% else %}thêm mới{% endif %}</strong>, {{ import_report.counts.existing }} đã có (giữ nguyên), {{ import_report.counts.no_citizen_id }} không có CCCD (bỏ qua){% if import_report.counts.repeated %}, {{ import_report.counts.repeated }} trùng trong tệp (bỏ qua){% endif %}.{% if import_report.backup %} Bản sao lưu Excel trước khi thêm: {{ import_report.backup }}.{% endif %}</p>{% for error in import_report.errors %}<p class="import-error">{{ error }}</p>{% endfor %}{% if import_report.preview %}<form class="import-actions" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}">{% if import_report.counts.add %}<button type="submit" formaction="{{ url_for('import_ca_confirm') }}">Thêm {{ import_report.counts.add }} người vào Excel tổng</button>{% endif %}<button type="submit" class="secondary" formaction="{{ url_for('import_ca_cancel') }}">{% if import_report.counts.add %}Hủy, không thêm{% else %}Đóng{% endif %}</button></form>{% endif %}{% for title, people in import_report.groups %}{% if people %}<details {% if loop.first %}open{% endif %}><summary>{{ title }} ({{ people|length }})</summary><ul class="import-list">{% for person in people %}<li>{% if person.stt %}STT {{ person.stt }} · {% endif %}<strong>{{ person.name }}</strong>{% if person.citizen_id %} · {{ person.citizen_id }}{% endif %}{% if person.quarter %} · {{ person.quarter }}{% endif %} <span class="muted">({{ person.file }}){% for note in person.notes %} — {{ note }}{% endfor %}</span></li>{% endfor %}</ul></details>{% endif %}{% endfor %}</section>{% endif %}
+    {% if current_user.can_create %}
     <dialog class="modal" id="import-ca-dialog"><form action="{{ url_for('import_ca_lists') }}" method="post" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf }}"><div class="modal-body"><h2>Nhập file CA</h2><p class="muted">Chọn một hoặc nhiều tệp Excel danh sách của bộ CA (ví dụ kp1.xlsx…). Ứng dụng đọc tệp và cho bạn xem trước ai sẽ được thêm; chưa có gì được ghi vào Excel tổng cho đến khi bạn bấm nút thêm. Người đã có (theo CCCD) được giữ nguyên, không cập nhật; người không có CCCD được bỏ qua và liệt kê lại. Khu phố lấy từ cột "Khu phố mới".</p><label>Tệp Excel<input type="file" name="ca_files" accept=".xlsx" multiple required></label></div><div class="modal-actions"><button type="button" class="secondary" id="import-ca-cancel">Hủy bỏ</button><button type="submit">Xem trước</button></div></form></dialog>
+    {% endif %}
     {% if read_only %}<p class="notice">Tệp .xlsm chỉ có thể xem và tạo Word trong ứng dụng. Hãy dùng Excel để lưu thay đổi.</p>{% endif %}
     <form class="card quick-search" action="{{ url_for('index') }}" method="get"><h2>Tìm kiếm hồ sơ</h2><div class="search-row"><label>Họ tên, STT hoặc CCCD<input name="q" value="{{ query }}" placeholder="Ví dụ: Nguyễn, 12 hoặc số CCCD" autofocus></label><button type="submit">Tìm kiếm</button><a class="button secondary" href="{{ url_for('index') }}">Xóa tìm kiếm</a></div>
       <details class="advanced" {% if filters_active %}open{% endif %}><summary>Bộ lọc nâng cao{% if filters_active %} đang được áp dụng{% endif %}</summary>{% macro multi(name, label, items, selected) %}<div class="multi-filter"><span>{{ label }}</span><details class="multi-menu"><summary class="multi-summary"></summary><div class="multi-list">{% for item in items %}{% set value, text = (item if item is not string else (item, item)) %}<label class="multi-item"><input type="checkbox" name="{{ name }}" value="{{ value }}" {% if value in selected %}checked{% endif %}>{{ text }}</label>{% endfor %}</div></details></div>{% endmacro %}<div class="filter-grid">{{ multi('birth_year', 'Năm sinh', options.birth_year, filters.birth_year) }}{{ multi('occupation', 'Nghề nghiệp', options.occupation, filters.occupation) }}{{ multi('education', 'Trình độ văn hóa', options.education, filters.education) }}{{ multi('ethnicity', 'Dân tộc', options.ethnicity, filters.ethnicity) }}{{ multi('religion', 'Tôn giáo', options.religion, filters.religion) }}{{ multi('dien', 'Diện', [(unset_dien, '<chưa có>')] + dien_options, filters.dien) }}<label>Địa chỉ<input name="address" value="{{ filters.address }}" placeholder="Thường trú hoặc nơi ở hiện nay"></label><label>Ngày tạo từ<input type="date" name="created_from" value="{{ filters.created_from }}"></label><label>Ngày tạo đến<input type="date" name="created_to" value="{{ filters.created_to }}"></label><label>Ngày cập nhật từ<input type="date" name="updated_from" value="{{ filters.updated_from }}"></label><label>Ngày cập nhật đến<input type="date" name="updated_to" value="{{ filters.updated_to }}"></label><label class="inline-check"><input type="checkbox" name="deleted" value="1" {% if filters.deleted %}checked{% endif %}>Chỉ xem hồ sơ đã xóa</label></div><p class="actions"><button type="submit">Áp dụng bộ lọc</button><a class="button secondary" href="{{ url_for('index') }}">Xóa bộ lọc</a></p></details>
     </form>
     <form id="batch-form" action="{{ url_for('generate_batch') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
+    {% if current_user.can_update %}
     <dialog class="modal" id="bulk-dialog">
       <div class="modal-body">
         <h2 id="bulk-title">Sửa hàng loạt</h2>
@@ -139,6 +150,8 @@ PAGE = r"""
       </div>
       <div class="modal-actions"><button type="button" class="secondary" id="bulk-cancel">Hủy bỏ</button><button type="submit" form="batch-form" id="bulk-save">Lưu</button></div>
     </dialog>
+    {% endif %}
+    {% if current_user.can_export %}
     <form id="dien-export-form" action="{{ url_for('export_by_dien') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"></form>
     <dialog class="modal" id="dien-export-dialog">
       <div class="modal-body">
@@ -149,11 +162,12 @@ PAGE = r"""
       </div>
       <div class="modal-actions"><button type="button" class="secondary" id="dien-export-cancel">Hủy bỏ</button><button type="submit" form="dien-export-form" id="dien-export-confirm" disabled>Xuất Excel</button></div>
     </dialog>
+    {% endif %}
     <section class="selected-section" id="selected-panel" aria-labelledby="selected-heading" hidden><div class="selected-heading"><h2 id="selected-heading">Hồ sơ đã chọn (<span id="selected-total">0</span>)</h2><span class="muted">Lựa chọn được giữ lại khi lọc hoặc đổi trang.</span><button type="button" class="secondary" id="clear-selection" disabled>Bỏ chọn tất cả</button></div><ul class="selected-list" id="selected-list"></ul></section>
     <section class="card table-card">
-      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span><button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button><details class="bulk-menu" id="bulk-menu"><summary class="button secondary" id="bulk-summary" role="button">Sửa hàng loạt</summary><div class="bulk-menu-list"><button type="button" data-bulk="quarter">Khu phố</button><button type="button" data-bulk="dien">Diện</button></div></details>{% if filters.deleted %}<button type="submit" form="batch-form" id="restore-btn" class="secondary" formaction="{{ url_for('bulk_restore') }}" disabled>Khôi phục</button>{% else %}<button type="submit" form="batch-form" id="delete-btn" class="danger" formaction="{{ url_for('bulk_delete') }}" onclick="return confirm('Xóa ' + document.getElementById('bulk-count').textContent + ' hồ sơ đã chọn? Hồ sơ chỉ bị ẩn khỏi ứng dụng, vẫn còn trong tệp Excel và có thể khôi phục.')" disabled>Xóa hàng loạt</button>{% endif %}<button type="button" class="secondary" id="export-dien-btn">Xuất Excel theo Diện</button><button type="submit" form="batch-form" id="batch-excel-btn" class="secondary" formaction="{{ url_for('export_batch_excel') }}" disabled>Tạo Excel hàng loạt</button></div></div>
-      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Khu phố</th><th>Diện</th><th>Ngày tạo</th><th>Ngày cập nhật</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.quarter %}{{ record.quarter }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="date" title="{{ record.created_at }}">{{ record.created_at[:10] }}</td><td class="date" title="{{ record.updated_at }}">{{ record.updated_at[:10] }}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list"><a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a><a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form>{% if record.is_deleted %}<form action="{{ url_for('bulk_restore') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit">Khôi phục</button></form>{% else %}<form action="{{ url_for('bulk_delete') }}" method="post" onsubmit="return confirm('Xóa hồ sơ STT {{ record.stt }} - {{ record.name }}? Hồ sơ chỉ bị ẩn khỏi ứng dụng, vẫn còn trong tệp Excel và có thể khôi phục.')"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit" class="row-delete">Xóa</button></form>{% endif %}</div></details></td></tr>{% else %}<tr><td colspan="11" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
-      <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập. Bấm "Tạo Excel hàng loạt" để xuất danh sách những hồ sơ đã chọn ra tệp Excel theo mẫu, kèm cột "Khu phố" và "Diện" ở cuối.</p>
+      <div class="table-toolbar"><span class="status">Hiển thị {{ shown_start }}–{{ shown_end }} trong tổng số {{ filtered_count }} hồ sơ phù hợp</span><div class="batch"><span id="selected-count" class="status">Chưa chọn hồ sơ</span>{% if current_user.can_read %}<button type="submit" form="batch-form" id="batch-btn" disabled>Tạo Word hàng loạt</button>{% endif %}{% if current_user.can_update %}<details class="bulk-menu" id="bulk-menu"><summary class="button secondary" id="bulk-summary" role="button">Sửa hàng loạt</summary><div class="bulk-menu-list"><button type="button" data-bulk="quarter">Khu phố</button><button type="button" data-bulk="dien">Diện</button></div></details>{% endif %}{% if current_user.can_delete %}{% if filters.deleted %}<button type="submit" form="batch-form" id="restore-btn" class="secondary" formaction="{{ url_for('bulk_restore') }}" disabled>Khôi phục</button>{% else %}<button type="submit" form="batch-form" id="delete-btn" class="danger" formaction="{{ url_for('bulk_delete') }}" onclick="return confirm('Xóa ' + document.getElementById('bulk-count').textContent + ' hồ sơ đã chọn? Hồ sơ chỉ bị ẩn khỏi ứng dụng, vẫn còn trong tệp Excel và có thể khôi phục.')" disabled>Xóa hàng loạt</button>{% endif %}{% endif %}{% if current_user.can_export %}<button type="button" class="secondary" id="export-dien-btn">Xuất Excel theo Diện</button><button type="submit" form="batch-form" id="batch-excel-btn" class="secondary" formaction="{{ url_for('export_batch_excel') }}" disabled>Tạo Excel hàng loạt</button>{% endif %}</div></div>
+      <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Khu phố</th><th>Diện</th><th>Ngày tạo</th><th>Ngày cập nhật</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.quarter %}{{ record.quarter }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="date" title="{{ record.created_at }}">{{ record.created_at[:10] }}</td><td class="date" title="{{ record.updated_at }}">{{ record.updated_at[:10] }}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list">{% if current_user.can_update %}<a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a>{% endif %}{% if current_user.can_read %}<a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form>{% endif %}{% if current_user.is_admin %}<a href="{{ url_for('admin_audit_log', stt=record.stt) }}">Nhật ký hoạt động</a>{% endif %}{% if not current_user.can_delete %}{% elif record.is_deleted %}<form action="{{ url_for('bulk_restore') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit">Khôi phục</button></form>{% else %}<form action="{{ url_for('bulk_delete') }}" method="post" onsubmit="return confirm('Xóa hồ sơ STT {{ record.stt }} - {{ record.name }}? Hồ sơ chỉ bị ẩn khỏi ứng dụng, vẫn còn trong tệp Excel và có thể khôi phục.')"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit" class="row-delete">Xóa</button></form>{% endif %}</div></details></td></tr>{% else %}<tr><td colspan="11" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
+      <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.{% if current_user.can_export %} Bấm "Tạo Excel hàng loạt" để xuất danh sách những hồ sơ đã chọn ra tệp Excel theo mẫu, kèm cột "Khu phố" và "Diện" ở cuối.{% endif %}</p>
     </section>
     {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
     <script>
@@ -177,6 +191,7 @@ PAGE = r"""
       });
       const bulkMenu = document.getElementById('bulk-menu');
       const bulkDialog = document.getElementById('bulk-dialog');
+      if (bulkDialog) {
       const bulkFields = {
         quarter: {label: 'Khu phố', field: document.getElementById('bulk-quarter-field'), action: {{ url_for('bulk_update_quarter')|tojson }}},
         dien: {label: 'Diện', field: document.getElementById('bulk-dien-field'), action: {{ url_for('bulk_update_dien')|tojson }}}
@@ -196,20 +211,25 @@ PAGE = r"""
         bulkMenu.open = false;
         bulkDialog.showModal();
       }
-      bulkMenu.addEventListener('click', function (event) {
+      if (bulkMenu) bulkMenu.addEventListener('click', function (event) {
         if (bulkMenu.getAttribute('aria-disabled') === 'true') { event.preventDefault(); return; }
         const choice = event.target.closest('[data-bulk]');
         if (choice) showBulkDialog(choice.dataset.bulk);
       });
       document.getElementById('bulk-cancel').addEventListener('click', function () { bulkDialog.close(); });
       bulkDialog.addEventListener('click', function (event) { if (event.target === bulkDialog) bulkDialog.close(); });
+      }
 
       const importCaDialog = document.getElementById('import-ca-dialog');
-      document.getElementById('import-ca-btn').addEventListener('click', function () { importCaDialog.showModal(); });
+      const importCaButton = document.getElementById('import-ca-btn');
+      if (importCaDialog) {
+      if (importCaButton) importCaButton.addEventListener('click', function () { importCaDialog.showModal(); });
       document.getElementById('import-ca-cancel').addEventListener('click', function () { importCaDialog.close(); });
       importCaDialog.addEventListener('click', function (event) { if (event.target === importCaDialog) importCaDialog.close(); });
+      }
 
       const dienExportDialog = document.getElementById('dien-export-dialog');
+      if (dienExportDialog) {
       const dienBoxes = Array.from(dienExportDialog.querySelectorAll('input[name="export_dien"]'));
       function updateDienExport() {
         const chosen = dienBoxes.filter(function (box) { return box.checked; }).length;
@@ -223,13 +243,15 @@ PAGE = r"""
       document.getElementById('dien-check-none').addEventListener('click', function () {
         dienBoxes.forEach(function (box) { box.checked = false; }); updateDienExport();
       });
-      document.getElementById('export-dien-btn').addEventListener('click', function () {
+      const exportDienButton = document.getElementById('export-dien-btn');
+      if (exportDienButton) exportDienButton.addEventListener('click', function () {
         dienBoxes.forEach(function (box) { box.checked = false; });
         updateDienExport();
         dienExportDialog.showModal();
       });
       document.getElementById('dien-export-cancel').addEventListener('click', function () { dienExportDialog.close(); });
       dienExportDialog.addEventListener('click', function (event) { if (event.target === dienExportDialog) dienExportDialog.close(); });
+      }
       let savedSelection = [];
       try { savedSelection = JSON.parse(sessionStorage.getItem(selectionKey) || '[]'); } catch (error) { savedSelection = []; }
       const selectedRecords = new Map();
@@ -270,12 +292,10 @@ PAGE = r"""
       function updateSelection() {
         const count = selectedRecords.size;
         document.getElementById('selected-count').textContent = count ? 'Đã chọn ' + count + ' hồ sơ' : 'Chưa chọn hồ sơ';
-        document.getElementById('batch-btn').disabled = !count;
-        document.getElementById('batch-excel-btn').disabled = !count;
+        ['batch-btn', 'batch-excel-btn'].forEach(function (id) { const button = document.getElementById(id); if (button) button.disabled = !count; });
         ['delete-btn', 'restore-btn'].forEach(function (id) { const button = document.getElementById(id); if (button) button.disabled = !count; });
         document.getElementById('clear-selection').disabled = !count;
-        bulkMenu.setAttribute('aria-disabled', count ? 'false' : 'true');
-        if (!count) bulkMenu.open = false;
+        if (bulkMenu) { bulkMenu.setAttribute('aria-disabled', count ? 'false' : 'true'); if (!count) bulkMenu.open = false; }
         document.getElementById('bulk-count').textContent = count;
         const visibleSelected = rowCheckboxes.filter(function(box){ return box.checked; }).length;
         selectAll.disabled = !rowCheckboxes.length;
@@ -325,6 +345,7 @@ PAGE = r"""
 </body>
 </html>
 """
+
 
 
 FORM_PAGE = r"""
@@ -617,6 +638,134 @@ FORM_PAGE = FORM_PAGE.replace("/*BASE_CSS*/", BASE_CSS)
 PREVIEW_PAGE = PREVIEW_PAGE.replace("/*BASE_CSS*/", BASE_CSS)
 
 
+GUEST_PAGE = r"""
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tra cứu hồ sơ thanh niên</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
+    body { max-width: 900px; margin: 0 auto; padding: 28px; }
+    h1 { color: #163d68; margin: 0 0 6px; } .muted { color: #637089; }
+    .card { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 24px; margin: 16px 0; box-shadow: 0 2px 10px #1720330c; }
+    label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; }
+    input, textarea, select, button { font: inherit; border-radius: 7px; border: 1px solid #bdc9d9; padding: 10px 12px; box-sizing: border-box; }
+    input, textarea { width: 100%; background: #fff; }
+    button, .button { background: #1e5b91; border: 0; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; padding: 10px 16px; border-radius: 7px; white-space: nowrap; }
+    .button.secondary { color: #1e5b91; background: #e9f1f8; }
+    .notice { padding: 12px 14px; border-radius: 8px; margin: 12px 0; }
+    .notice.error { background: #fdecec; color: #8f2f2f; }
+    .notice.success { background: #e9f4eb; color: #265b31; }
+    .notice.info { background: #e0edff; color: #163d68; border: 1px solid #b8d5ff; }
+    .search-box { display: flex; gap: 12px; align-items: end; }
+    .search-box label { flex: 1; }
+    .section-card { border: 1px solid #dbe3ee; border-radius: 9px; margin: 14px 0; overflow: hidden; }
+    .section-card summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; color: #163d68; font-weight: 700; background: #f7f9fc; }
+    .section-card[open] summary { border-bottom: 1px solid #dbe3ee; background: #eef4fa; }
+    .field-count { color: #637089; font-size: 14px; font-weight: 500; }
+    .section-body { padding: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+    .wide { grid-column: 1 / -1; }
+    textarea { min-height: 84px; resize: vertical; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+    .required { color: #a52a2a; }
+    .readonly-field { background: #f7f9fc; border-color: #dbe3ee; color: #344a66; }
+    .info-tooltip { position: relative; display: inline-block; cursor: help; }
+    .info-tooltip .tooltip-text { visibility: hidden; background: #163d68; color: #fff; text-align: center; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-weight: 400; position: absolute; z-index: 1; bottom: 125%; left: 50%; transform: translateX(-50%); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.15); opacity: 0; transition: opacity .2s; }
+    .info-tooltip .tooltip-text::after { content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px; border: 5px solid transparent; border-top-color: #163d68; }
+    .info-tooltip:hover .tooltip-text, .info-tooltip:focus .tooltip-text { visibility: visible; opacity: 1; }
+    @media (max-width: 700px) {
+      body { padding: 14px; }
+      .search-box { flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .info-tooltip .tooltip-text { white-space: normal; min-width: 200px; left: 0; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 Tra cứu hồ sơ thanh niên</h1>
+  <p class="muted">Nhập số CCCD để kiểm tra thông tin hồ sơ hoặc tạo mới</p>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <p class="notice {{ 'error' if category == 'error' else 'success' if category == 'success' else 'info' }}">{{ message }}</p>
+    {% endfor %}
+  {% endwith %}
+  <div class="card">
+    <form action="{{ url_for('guest_lookup_post') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <div class="search-box">
+        <label>Số căn cước công dân (CCCD)
+          <input type="text" name="cccd" value="{{ cccd }}" placeholder="Nhập 12 chữ số CCCD" pattern="[0-9]{12}" title="CCCD gồm 12 chữ số" required autofocus>
+        </label>
+        <button type="submit">Tra cứu</button>
+      </div>
+    </form>
+  </div>
+
+  {% if mode == 'readonly' and record %}
+  <div class="notice info">
+    <span class="info-tooltip" tabindex="0">
+      ℹ️ Hồ sơ đã tồn tại — Chỉ hiển thị thông tin.
+      <span class="tooltip-text">Kiểm tra thông tin và liên hệ admin nếu cần sửa đổi</span>
+    </span>
+  </div>
+  {% for section in sections %}
+  <details class="section-card" {% if loop.first %}open{% endif %}>
+    <summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary>
+    <div class="section-body"><div class="grid">
+      {% for field in section.fields %}
+      <label class="{{ 'wide' if field.input_type == 'textarea' else '' }}">
+        {{ field.label }}
+        {% if field.input_type == 'textarea' %}
+        <textarea class="readonly-field" readonly>{{ values.get(field.name, '') }}</textarea>
+        {% else %}
+        <input type="{{ field.input_type }}" class="readonly-field" value="{{ values.get(field.name, '') }}" readonly>
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div></div>
+  </details>
+  {% endfor %}
+
+  {% elif mode == 'create' %}
+  <p class="notice info">Không tìm thấy hồ sơ với CCCD <strong>{{ cccd }}</strong>. Vui lòng điền thông tin bên dưới để tạo hồ sơ mới.</p>
+  <form action="{{ url_for('guest_save') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf }}">
+    <input type="hidden" name="cccd" value="{{ cccd }}">
+    <input type="hidden" name="signature" value="{{ signature }}">
+    {% for section in sections %}
+    <details class="section-card" {% if loop.first %}open{% endif %}>
+      <summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary>
+      <div class="section-body"><div class="grid">
+        {% for field in section.fields %}
+        <label class="{{ 'wide' if field.input_type == 'textarea' else '' }}">
+          {{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}
+          {% if field.input_type == 'textarea' %}
+          <textarea name="{{ field.name }}" {% if field.name == cccd_field_name %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>
+          {% else %}
+          <input type="{{ field.input_type }}" name="{{ field.name }}" value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if field.name == cccd_field_name %}readonly{% endif %}>
+          {% endif %}
+        </label>
+        {% endfor %}
+      </div></div>
+    </details>
+    {% endfor %}
+    {% if errors %}
+    <div class="notice error"><strong>Chưa thể lưu hồ sơ:</strong><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
+    {% endif %}
+    <div class="actions">
+      <button type="submit">Gửi hồ sơ</button>
+      <a class="button secondary" href="{{ url_for('guest_lookup') }}">Quay lại</a>
+    </div>
+  </form>
+  {% endif %}
+</body>
+</html>
+"""
+
+
 def render_preview(title, record=None, values=None, errors=None, message=None):
     values = values if values is not None else form_values(record)
 
@@ -652,22 +801,139 @@ def render_preview(title, record=None, values=None, errors=None, message=None):
     )
 
 
-LOGIN_PAGE = r"""
+def render_guest_form(mode, cccd="", record=None, values=None, errors=None):
+    """Render the guest lookup page in readonly or create mode."""
+    from quan_ly_ho_so.forms.fields import field_definitions, form_values
+    definitions = field_definitions()
+    grouped = []
+    for section_name, _ in FORM_GROUPS:
+        grouped.append({
+            "name": section_name,
+            "fields": [field for field in definitions if field["section"] == section_name],
+        })
+    # Determine the CCCD field name
+    cccd_column = state["headers"].get("Căn cước")
+    cccd_field_name = f"column_{cccd_column}" if cccd_column else ""
+    if values is None:
+        if mode == "readonly" and record:
+            values = form_values(record)
+        elif mode == "create":
+            values = form_values(None)
+            # Pre-fill CCCD
+            if cccd_field_name:
+                values[cccd_field_name] = cccd
+        else:
+            values = {}
+    return render_template_string(
+        GUEST_PAGE,
+        mode=mode,
+        cccd=cccd,
+        record=record,
+        sections=grouped,
+        values=values,
+        errors=errors or [],
+        signature=signature_token(state["signature"]),
+        csrf=csrf_token(),
+        cccd_field_name=cccd_field_name,
+    )
+
+
+AUDIT_LOG_PAGE = r"""
 <!doctype html>
-<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Đăng nhập</title>
-<style>
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f2f5fa; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #1c2a44; }
-  form { background: #fff; border: 1px solid #d8e0ec; border-radius: 12px; padding: 28px; width: min(360px, 90vw); box-shadow: 0 10px 28px rgba(20,32,56,.12); display: flex; flex-direction: column; gap: 14px; }
-  h1 { margin: 0; font-size: 20px; } p { margin: 0; font-size: 13px; color: #5a6a86; }
-  label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 14px; }
-  input { font: inherit; padding: 10px 12px; border: 1px solid #b7c3d8; border-radius: 8px; }
-  button { font: inherit; font-weight: 600; padding: 10px; border: 0; border-radius: 8px; background: #1d4f91; color: #fff; cursor: pointer; }
-  .error { color: #a3323b; font-size: 13px; }
-</style></head>
-<body><form method="post"><h1>Quản lý hồ sơ thanh niên</h1><p>Nhập mật khẩu để sử dụng ứng dụng.</p>
-<input type="hidden" name="csrf_token" value="{{ csrf }}">
-{% if error %}<div class="error">{{ error }}</div>{% endif %}
-<label>Mật khẩu<input type="password" name="password" autofocus required></label><button type="submit">Đăng nhập</button></form></body></html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nhật ký hoạt động · Quản lý hồ sơ thanh niên</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
+    body { max-width: 1240px; margin: 0 auto; padding: 28px; } h1 { margin: 0 0 6px; color: #163d68; }
+    .muted { color: #637089; } .status { font-size: 14px; color: #637089; }
+    .card { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 10px #1720330c; }
+    button, .button { font: inherit; background: #1e5b91; border: 0; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; padding: 10px 13px; border-radius: 7px; white-space: nowrap; }
+    .button.secondary { color: #1e5b91; background: #e9f1f8; }
+    .table-wrap { overflow-x: auto; } table { width: 100%; min-width: 700px; border-collapse: collapse; } th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e4e9f0; vertical-align: top; font-size: 14px; }
+    th { color: #344a66; background: #eef3f8; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+    .badge.create { background: #e0f7e9; color: #1a7f37; }
+    .badge.update { background: #fff3cd; color: #856404; }
+    .badge.delete { background: #fdecec; color: #8f2f2f; }
+    .change-list { font-size: 13px; color: #444; margin: 4px 0 0; padding: 0; list-style: none; }
+    .change-list li { margin: 2px 0; }
+    .change-list .field { font-weight: 600; color: #163d68; }
+    .change-list .old { color: #8f2f2f; text-decoration: line-through; }
+    .change-list .new { color: #1a7f37; }
+    .pagination { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+    @media (max-width: 700px) { body { padding: 14px; } }
+  </style>
+</head>
+<body>
+  <h1>Nhật ký hoạt động</h1>
+  <p class="muted">{% if stt %}Lịch sử thao tác cho riêng hồ sơ STT {{ stt }}{% else %}Lịch sử thao tác tạo, sửa, xóa hồ sơ thanh niên{% endif %}</p>
+  <div class="actions">
+    {% if current_user and current_user.is_admin %}
+      <a class="button secondary" href="{{ url_for('admin_dashboard') }}">← Quản trị người dùng</a>
+    {% endif %}
+    <a class="button secondary" href="{{ url_for('index') }}">← Danh sách hồ sơ</a>
+    {% if stt %}
+      <a class="button secondary" href="{{ url_for('admin_audit_log') }}">Xem toàn bộ nhật ký</a>
+    {% endif %}
+  </div>
+  <p class="status">Tổng cộng {{ total }} lượt thao tác{% if stt %} cho hồ sơ STT {{ stt }}{% endif %}</p>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Thời gian</th><th>Người thực hiện</th><th>Hành động</th><th>STT</th><th>Họ tên</th><th>Chi tiết thay đổi</th></tr></thead>
+        <tbody>
+          {% for entry in entries %}
+          <tr>
+            <td>{{ entry.timestamp[:19].replace('T', ' ') }}</td>
+            <td><strong>{{ entry.username }}</strong></td>
+            <td>
+              {% if entry.action == 'create' %}<span class="badge create">Tạo mới</span>
+              {% elif entry.action == 'update' %}<span class="badge update">Cập nhật</span>
+              {% elif entry.action == 'delete' %}<span class="badge delete">Xóa mềm</span>
+               {% elif entry.action == 'restore' %}<span class="badge">Khôi phục</span>
+               {% elif entry.action == 'export' %}<span class="badge">Xuất file</span>
+              {% else %}<span class="badge">{{ entry.action }}</span>{% endif %}
+            </td>
+            <td>{{ entry.stt }}</td>
+            <td>{{ entry.record_name }}</td>
+            <td>
+              {% if entry.details and entry.details.changes is defined %}
+                <ul class="change-list">
+                  {% for change in entry.details.changes %}
+                  <li><span class="field">{{ change.field }}</span>: <span class="old">{{ change['from'] or '(trống)' }}</span> → <span class="new">{{ change.to or '(trống)' }}</span></li>
+                  {% endfor %}
+                </ul>
+              {% elif entry.details and entry.details.fields is defined %}
+                <ul class="change-list">
+                  {% for field, value in entry.details.fields.items() %}
+                  <li><span class="field">{{ field }}</span>: <span class="new">{{ value }}</span></li>
+                  {% endfor %}
+                </ul>
+              {% elif entry.details and entry.details.reason is defined %}
+                <span class="muted">{{ entry.details.reason }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">Chưa có lượt thao tác nào{% if stt %} cho hồ sơ STT {{ stt }}{% endif %}.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if pages > 1 %}
+    <nav class="pagination">
+      {% for p in range(1, pages + 1) %}
+      <a class="button {{ 'secondary' if p != page else '' }}" href="{{ url_for('admin_audit_log', page=p, stt=stt) if stt else url_for('admin_audit_log', page=p) }}">{{ p }}</a>
+      {% endfor %}
+    </nav>
+    {% endif %}
+  </div>
+</body>
+</html>
 """
 
 

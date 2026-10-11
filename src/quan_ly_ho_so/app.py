@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import io
 import logging
 import os
@@ -13,7 +12,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 import webbrowser
 import zipfile
 from datetime import datetime
@@ -33,8 +31,34 @@ from flask import (
     send_from_directory,
     url_for,
 )
+from datetime import timedelta
+
+from werkzeug.security import check_password_hash
 from werkzeug.utils import secure_filename
 
+from quan_ly_ho_so.auth import (
+    DEFAULT_ADMIN_PASSWORD,
+    DEFAULT_ADMIN_USERNAME,
+    DEFAULT_SESSION_LIFETIME_DAYS,
+    DEFAULT_USER_PASSWORD,
+    admin_required,
+    auth_database_connection,
+    auth_required,
+    authenticate,
+    create_user,
+    current_user,
+    delete_user,
+    get_persistent_secret_key,
+    get_user_by_id,
+    get_user_by_username,
+    list_users,
+    login_required,
+    login_user,
+    logout_user,
+    permission_required,
+    reset_user_password,
+    update_user,
+)
 from quan_ly_ho_so.config import (
     DEFAULT_OUTPUT_NAME,
     DIEN_TEMPLATE_DIR,
@@ -51,13 +75,26 @@ from quan_ly_ho_so.config import (
 )
 from quan_ly_ho_so import documents
 from quan_ly_ho_so.attachments import AttachmentError, document_thumbnail, prepare_document
+from quan_ly_ho_so.audit import compute_changes, get_audit_logs, log_action
 from quan_ly_ho_so.errors import StaleWorkbookError
 from quan_ly_ho_so.forms.enums import NvqsStatus
-from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, validate_form_values
+from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, form_values, validate_form_values
 from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
-from quan_ly_ho_so.web.templates import LOGIN_PAGE, PAGE, page_url, render_form, render_preview
+from quan_ly_ho_so.web.templates import (
+    ADMIN_PAGE,
+    AUDIT_LOG_PAGE,
+    FORCE_CHANGE_PASSWORD_PAGE,
+    GUEST_PAGE,
+    LOGIN_PAGE,
+    PAGE,
+    PROFILE_PAGE,
+    page_url,
+    render_form,
+    render_guest_form,
+    render_preview,
+)
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
     all_citizen_ids,
@@ -66,6 +103,7 @@ from quan_ly_ho_so.workbook.cache import (
     find_record,
     move_record_owner,
     record_file_image,
+    find_record_by_citizen_id,
     query_filter_options,
     query_records,
     set_record_attribute,
@@ -85,35 +123,304 @@ from quan_ly_ho_so.workbook.manager import (
 from quan_ly_ho_so.workbook.writer import append_people, save_person
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("QUAN_LY_HO_SO_SECRET") or secrets.token_hex(32)
+app.secret_key = get_persistent_secret_key()
+app.permanent_session_lifetime = timedelta(days=DEFAULT_SESSION_LIFETIME_DAYS)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
-# Set QLHS_PASSWORD to make everyone, even on this computer, sign in before using the app.
-app.config["ACCESS_PASSWORD"] = os.environ.get("QLHS_PASSWORD", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 
 @app.before_request
-def guard_access():
-    """Keep the app on the local network, and behind the shared password when one is set."""
+def guard_network():
+    """Keep the app on the local network: refuse anything that is not this computer or a private address."""
     if not is_local_network(request.remote_addr):
         abort(403)
-    if app.config["ACCESS_PASSWORD"] and request.endpoint not in ("login", "static") and not session.get("signed_in"):
+
+
+@app.context_processor
+def inject_user():
+    return {"current_user": current_user()}
+
+
+@app.before_request
+def require_authentication():
+    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_save"}
+    if request.endpoint in exempt_endpoints or request.endpoint is None:
+        return None
+    user = current_user()
+    if not user:
+        if request.method == "GET":
+            next_url = request.full_path if request.query_string else request.path
+            return redirect(url_for("login", next=next_url))
         return redirect(url_for("login"))
 
+    force_endpoints = {"force_change_password", "force_change_password_post", "logout"}
+    if user.get("must_change_password") and request.endpoint not in force_endpoints:
+        return redirect(url_for("force_change_password"))
 
-@app.route("/login", methods=["GET", "POST"])
+
+@app.get("/login")
 def login():
-    error = ""
-    if request.method == "POST":
-        password = request.form.get("password", "")
-        if valid_csrf(request.form.get("csrf_token")) and hmac.compare_digest(
-            password.encode("utf-8"), app.config["ACCESS_PASSWORD"].encode("utf-8")
-        ):
-            session["signed_in"] = True
-            return redirect(url_for("index"))
-        error = "Mật khẩu không đúng."
-        time.sleep(1)  # slows down guessing; the app is single-purpose and local, so the wait is harmless
-    return render_template_string(LOGIN_PAGE, csrf=csrf_token(), error=error)
+    if current_user():
+        return redirect(url_for("index"))
+    next_url = request.args.get("next", "")
+    return render_template_string(
+        LOGIN_PAGE,
+        csrf=csrf_token(),
+        next_url=next_url,
+        username="",
+    )
+
+
+@app.post("/login")
+def login_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử đăng nhập lại.", "error")
+        return redirect(url_for("login"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    next_url = request.form.get("next", "")
+    user = authenticate(username, password)
+    if user is None:
+        flash("Tên đăng nhập hoặc mật khẩu không chính xác.", "error")
+        return render_template_string(
+            LOGIN_PAGE,
+            csrf=csrf_token(),
+            next_url=next_url,
+            username=username,
+        )
+    login_user(user)
+    if user.get("must_change_password"):
+        flash("Đây là lần đầu đăng nhập hoặc mật khẩu vừa được đặt lại. Vui lòng tự cài đặt mật khẩu mới.", "error")
+        return redirect(url_for("force_change_password"))
+    flash(f"Đăng nhập thành công. Xin chào {user['username']}!", "success")
+    if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+        return redirect(next_url)
+    return redirect(url_for("index"))
+
+
+@app.route("/logout", methods=["GET", "POST"])
+def logout():
+    logout_user()
+    flash("Đã đăng xuất khỏi hệ thống.", "success")
+    return redirect(url_for("login"))
+
+
+@app.get("/force-change-password")
+@auth_required
+def force_change_password():
+    user = current_user()
+    if not user or not user.get("must_change_password"):
+        return redirect(url_for("index"))
+    return render_template_string(
+        FORCE_CHANGE_PASSWORD_PAGE,
+        csrf=csrf_token(),
+        username=user["username"],
+    )
+
+
+@app.post("/force-change-password")
+@auth_required
+def force_change_password_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("force_change_password"))
+    user = current_user()
+    if not user:
+        return redirect(url_for("login"))
+    new_pw = request.form.get("new_password", "").strip()
+    confirm_pw = request.form.get("confirm_password", "").strip()
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+    try:
+        update_user(user["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Cài đặt mật khẩu mới thành công! Bạn có thể bắt đầu sử dụng hệ thống.", "success")
+        return redirect(url_for("index"))
+    except Exception as error:
+        flash(f"Không thể cập nhật mật khẩu: {error}", "error")
+        return render_template_string(FORCE_CHANGE_PASSWORD_PAGE, csrf=csrf_token(), username=user["username"])
+
+
+@app.get("/profile")
+@auth_required
+def user_profile():
+    user_info = current_user()
+    user_db = get_user_by_id(user_info["id"])
+    return render_template_string(
+        PROFILE_PAGE,
+        user=user_db or user_info,
+        current_user=user_info,
+        csrf=csrf_token(),
+    )
+
+
+@app.post("/profile/change-password")
+@auth_required
+def profile_change_password():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("user_profile"))
+    user_info = current_user()
+    user_db = get_user_by_id(user_info["id"])
+    current_pw = request.form.get("current_password", "")
+    new_pw = request.form.get("new_password", "").strip()
+    confirm_pw = request.form.get("confirm_password", "").strip()
+    if not user_db or not check_password_hash(user_db["password_hash"], current_pw):
+        flash("Mật khẩu hiện tại không chính xác.", "error")
+        return redirect(url_for("user_profile"))
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return redirect(url_for("user_profile"))
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return redirect(url_for("user_profile"))
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return redirect(url_for("user_profile"))
+    try:
+        update_user(user_info["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Đổi mật khẩu thành công!", "success")
+    except Exception as error:
+        flash(f"Không thể đổi mật khẩu: {error}", "error")
+    return redirect(url_for("user_profile"))
+
+
+@app.get("/admin")
+@auth_required(role="admin")
+def admin_dashboard():
+    users = list_users()
+    admin_user = next((u for u in users if u["role"] == "admin"), None)
+    return render_template_string(
+        ADMIN_PAGE,
+        users=users,
+        admin_user=admin_user,
+        csrf=csrf_token(),
+        current_user=current_user(),
+    )
+
+
+@app.post("/admin/users/create")
+@auth_required(role="admin")
+def admin_create_user():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    username = request.form.get("username", "").strip()
+    can_create = bool(request.form.get("can_create"))
+    can_read = bool(request.form.get("can_read"))
+    can_update = bool(request.form.get("can_update"))
+    can_delete = bool(request.form.get("can_delete"))
+    can_export = bool(request.form.get("can_export"))
+    try:
+        create_user(
+            username,
+            password=DEFAULT_USER_PASSWORD,
+            can_create=can_create,
+            can_read=can_read,
+            can_update=can_update,
+            can_delete=can_delete,
+            can_export=can_export,
+            must_change_password=True,
+        )
+        flash(f"Đã tạo người dùng '{username}' thành công (mật khẩu mặc định: '{DEFAULT_USER_PASSWORD}'). Người dùng sẽ phải tự cài mật khẩu mới khi đăng nhập lần đầu.", "success")
+    except Exception as error:
+        flash(f"Không thể tạo người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/update")
+@auth_required(role="admin")
+def admin_update_user(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    can_create = bool(request.form.get("can_create"))
+    can_read = bool(request.form.get("can_read"))
+    can_update = bool(request.form.get("can_update"))
+    can_delete = bool(request.form.get("can_delete"))
+    can_export = bool(request.form.get("can_export"))
+    try:
+        updated = update_user(
+            user_id,
+            password=None,
+            can_create=can_create,
+            can_read=can_read,
+            can_update=can_update,
+            can_delete=can_delete,
+            can_export=can_export,
+        )
+        flash(f"Đã cập nhật quyền người dùng '{updated['username']}' thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể cập nhật người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/reset-password")
+@auth_required(role="admin")
+def admin_reset_user_password(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        updated = reset_user_password(user_id)
+        flash(f"Đã đặt lại mật khẩu cho người dùng '{updated['username']}' về mặc định ('{DEFAULT_USER_PASSWORD}'). Người dùng sẽ bắt buộc phải tự cài đặt mật khẩu mới khi đăng nhập.", "success")
+    except Exception as error:
+        flash(f"Không thể đặt lại mật khẩu: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/users/<int:user_id>/delete")
+@auth_required(role="admin")
+def admin_delete_user(user_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        delete_user(user_id)
+        flash("Đã xóa người dùng thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể xóa người dùng: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
+
+
+@app.post("/admin/change-password")
+@auth_required(role="admin")
+def admin_change_password():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_dashboard"))
+    current_user_obj = current_user()
+    admin_record = get_user_by_id(current_user_obj["id"])
+    current_pw = request.form.get("current_password", "")
+    new_pw = request.form.get("new_password", "")
+    confirm_pw = request.form.get("confirm_password", "")
+    if not admin_record or not check_password_hash(admin_record["password_hash"], current_pw):
+        flash("Mật khẩu hiện tại không chính xác.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if len(new_pw) < 4:
+        flash("Mật khẩu mới phải có ít nhất 4 ký tự.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if new_pw == DEFAULT_USER_PASSWORD:
+        flash("Mật khẩu mới không được trùng với mật khẩu mặc định (123456). Vui lòng chọn mật khẩu mới khác an toàn hơn.", "error")
+        return redirect(url_for("admin_dashboard"))
+    if new_pw != confirm_pw:
+        flash("Mật khẩu mới và xác nhận mật khẩu không khớp nhau.", "error")
+        return redirect(url_for("admin_dashboard"))
+    try:
+        update_user(current_user_obj["id"], password=new_pw, must_change_password=False)
+        session["must_change_password"] = False
+        flash("Đã đổi mật khẩu Quản trị viên thành công.", "success")
+    except Exception as error:
+        flash(f"Không thể đổi mật khẩu: {error}", "error")
+    return redirect(url_for("admin_dashboard"))
 
 
 def valid_date(value):
@@ -124,6 +431,12 @@ def valid_date(value):
         return ""
 
 
+def audit(action, record=None, details=None):
+    """Write one entry of the update history under whoever is signed in (guests have no account)."""
+    username = (current_user() or {}).get("username", "khách")
+    log_action(username, action, record["stt"] if record else "", record["name"] if record else "", details)
+
+
 def pending_ca_report():
     pending = state.get("import_pending")
     if pending is None:
@@ -132,10 +445,42 @@ def pending_ca_report():
 
 
 @app.get("/")
+@auth_required
 def index():
     refresh_state()
+    user = current_user()
     if state["workbook"] is None:
-        return render_template_string(PAGE, loaded=False, error=state["error"], csrf=csrf_token())
+        return render_template_string(PAGE, loaded=False, error=state["error"], csrf=csrf_token(), current_user=user)
+    if not user.get("can_read"):
+        return render_template_string(
+            PAGE,
+            loaded=True,
+            error=state["error"],
+            workbook_name=state["workbook"].name,
+            sheet_name=state["sheet"],
+            record_count=state["record_count"],
+            loaded_at=state["loaded_at"].strftime("%Y-%m-%d %H:%M:%S") if state["loaded_at"] else "",
+            records=[],
+            filtered_count=0,
+            shown_start=0,
+            shown_end=0,
+            page=1,
+            pages=1,
+            page_urls={},
+            query="",
+            filters={},
+            filters_active=False,
+            options={},
+            signature=signature_token(state["signature"]),
+            csrf=csrf_token(),
+            read_only=state["workbook"].suffix.lower() == ".xlsm",
+            dien_options=NvqsStatus.options(),
+            unset_dien=UNSET_DIEN_FILTER,
+            selection_scope="",
+            quarter_choices=QUARTER_CHOICES,
+            import_report=None,
+            current_user=user,
+        )
     query = request.args.get("q", "").strip()
     options = {key: query_filter_options(key) for key in FILTER_DB_COLUMNS}
     # Every option filter can carry several values; keep the canonical spelling of each and drop strangers.
@@ -191,10 +536,12 @@ def index():
         selection_scope=f"{state['workbook']}:{state['sheet']}",
         quarter_choices=QUARTER_CHOICES,
         import_report=state.pop("import_report", None) or pending_ca_report(),
+        current_user=user,
     )
 
 
 @app.get("/api/status")
+@auth_required
 def api_status():
     refresh_state()
     return jsonify({
@@ -206,6 +553,7 @@ def api_status():
 
 
 @app.get("/refresh")
+@auth_required
 def refresh():
     refresh_state(force=True)
     if state["error"]:
@@ -216,6 +564,7 @@ def refresh():
 
 
 @app.get("/choose")
+@auth_required
 def choose_workbook():
     selected = native_workbook_dialog()
     if selected is None:
@@ -231,6 +580,7 @@ def choose_workbook():
 
 
 @app.post("/load")
+@auth_required
 def load_uploaded_workbook():
     upload = request.files.get("workbook")
     if upload is None or not upload.filename:
@@ -253,6 +603,7 @@ def load_uploaded_workbook():
 
 
 @app.get("/open-excel")
+@auth_required
 def open_excel():
     if state["workbook"] is None:
         return redirect(url_for("index"))
@@ -270,6 +621,7 @@ def open_excel():
 
 
 @app.get("/person/new")
+@auth_required(permission="create")
 def new_person():
     refresh_state()
     if state["workbook"] is None:
@@ -278,6 +630,7 @@ def new_person():
 
 
 @app.get("/person/<stt>/edit")
+@auth_required(permission="update")
 def edit_person(stt):
     refresh_state()
     record = find_record(stt)
@@ -288,6 +641,7 @@ def edit_person(stt):
 
 
 @app.get("/person/new/preview")
+@auth_required(permission="create")
 def new_person_preview():
     refresh_state()
     if state["workbook"] is None:
@@ -296,6 +650,7 @@ def new_person_preview():
 
 
 @app.get("/person/<stt>/preview")
+@auth_required(permission="read")
 def preview_person(stt):
     refresh_state()
     record = find_record(stt)
@@ -306,15 +661,23 @@ def preview_person(stt):
 
 
 @app.post("/person/save")
+@auth_required
 def save_person_route():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Biểu mẫu đã hết hạn. Hãy mở lại biểu mẫu.", "error")
         return redirect(url_for("index"))
     if state["workbook"] is None:
         return redirect(url_for("index"))
+    user = current_user()
     definitions = field_definitions()
     values = {definition["name"]: request.form.get(definition["name"], "") for definition in definitions}
     original_stt = request.form.get("original_stt", "").strip() or None
+    if original_stt and not user.get("can_update"):
+        flash("Bạn không có quyền chỉnh sửa hồ sơ.", "error")
+        return redirect(url_for("index"))
+    if not original_stt and not user.get("can_create"):
+        flash("Bạn không có quyền thêm mới hồ sơ.", "error")
+        return redirect(url_for("index"))
     values_by_column = {definition["column"]: values[definition["name"]] for definition in definitions}
     values_for_validation = {column: raw for column, raw in values_by_column.items()}
     values_for_validation["__original_stt"] = original_stt or ""
@@ -339,6 +702,8 @@ def save_person_route():
         return render_page("Cập nhật hồ sơ" if original_stt else "Thêm hồ sơ", record=record, values=values, errors=validation_errors, **status_argument)
 
     headers_by_column = {definition["column"]: definition["header"] for definition in definitions}
+    labels_by_name = {definition["name"]: definition["header"] for definition in definitions}
+    old_form_values = form_values(record) if record else {}
     updates = {column: coerce_cell_value(headers_by_column[column], raw) for column, raw in values_by_column.items()}
     try:
         row, stt, backup = save_person(
@@ -349,6 +714,16 @@ def save_person_route():
             documents.move_documents(record["citizen_id"], citizen_id)
         if nvqs_type is not None and citizen_id:
             set_record_type(state["workbook"], citizen_id, nvqs_type)
+        # Audit logging
+        username = user.get("username", "unknown")
+        name_column = state["headers"].get("TÊN THƯỜNG DÙNG")
+        record_name = values.get(f"column_{name_column}", "") if name_column else ""
+        if original_stt:
+            changes = compute_changes(old_form_values, values, labels_by_name)
+            if changes:
+                log_action(username, "update", str(stt), record_name, {"changes": changes})
+        else:
+            log_action(username, "create", str(stt), record_name, {"fields": {labels_by_name.get(k, k): v for k, v in values.items() if v}})
         refresh_state(force=True)
         flash(f"Đã lưu hồ sơ STT {stt}. Bản sao lưu: {backup.name}", "success")
         return redirect(url_for("index"))
@@ -358,6 +733,7 @@ def save_person_route():
 
 
 @app.post("/generate/<stt>")
+@auth_required(permission="read")
 def generate(stt):
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -387,6 +763,7 @@ def generate(stt):
 
 
 @app.post("/generate/batch")
+@auth_required(permission="read")
 def generate_batch():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -436,6 +813,7 @@ def owner_citizen_id(stt):
 
 
 @app.post("/person/<stt>/files")
+@auth_required(permission="update")
 def upload_record_file(stt):
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -464,11 +842,13 @@ def upload_record_file(stt):
         logging.exception("Could not store uploaded document: %s", error)
         flash(f"Không thể lưu tài liệu: {error}", "error")
         return redirect(url_for("edit_person", stt=stt))
+    audit("update", find_record(stt), {"reason": f"Thêm tài liệu liên quan: {filename}"})
     flash(f"Đã thêm tài liệu {filename} vào hồ sơ liên quan.", "success")
     return redirect(url_for("edit_person", stt=stt))
 
 
 @app.get("/person/<stt>/documents/<name>")
+@auth_required(permission="read")
 def record_document_file(stt, name):
     if state["workbook"] is None:
         return redirect(url_for("index"))
@@ -491,6 +871,7 @@ def record_document_file(stt, name):
 
 
 @app.post("/person/<stt>/documents/<name>/delete")
+@auth_required(permission="update")
 def remove_record_document(stt, name):
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -499,6 +880,7 @@ def remove_record_document(stt, name):
         return redirect(url_for("index"))
     citizen_id = owner_citizen_id(stt)
     if citizen_id and documents.delete_document(citizen_id, name):
+        audit("update", find_record(stt), {"reason": f"Xóa tài liệu liên quan: {name}"})
         flash("Đã xóa tài liệu khỏi hồ sơ liên quan.", "success")
     else:
         flash("Không tìm thấy tài liệu cần xóa.", "error")
@@ -506,6 +888,7 @@ def remove_record_document(stt, name):
 
 
 @app.get("/person/<stt>/files/<int:file_id>")
+@auth_required(permission="read")
 def record_file(stt, file_id):
     if state["workbook"] is None:
         return redirect(url_for("index"))
@@ -522,6 +905,7 @@ def record_file(stt, file_id):
 
 
 @app.post("/person/<stt>/files/<int:file_id>/delete")
+@auth_required(permission="update")
 def remove_record_file(stt, file_id):
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -557,7 +941,9 @@ def apply_to_selection(field, value, label, shown_value):
         elif not record["citizen_id"]:
             without_citizen_id.append(stt)
         else:
+            previous = record["type" if field == "type" else field]
             set_record_attribute(state["workbook"], record["citizen_id"], field, value)
+            audit("update", record, {"changes": [{"field": label, "from": previous or "", "to": shown_value or ""}]})
             changed += 1
     if changed:
         refresh_state(force=True)
@@ -576,6 +962,7 @@ def apply_to_selection(field, value, label, shown_value):
 
 
 @app.post("/bulk/dien")
+@auth_required(permission="update")
 def bulk_update_dien():
     value = request.form.get("bulk_dien", "").strip()
     if value and value not in NvqsStatus.__members__:
@@ -585,6 +972,7 @@ def bulk_update_dien():
 
 
 @app.post("/bulk/khu-pho")
+@auth_required(permission="update")
 def bulk_update_quarter():
     value = request.form.get("bulk_quarter", "").strip()
     if value and value not in QUARTER_CHOICES:
@@ -612,6 +1000,7 @@ def ca_report(pending, plan, backup="", preview=False):
 
 
 @app.post("/import/ca")
+@auth_required(permission="create")
 def import_ca_lists():
     """Read the Ministry's khu phố lists and show who would be added; nothing is written yet."""
     if not valid_csrf(request.form.get("csrf_token")):
@@ -635,6 +1024,7 @@ def import_ca_lists():
 
 
 @app.post("/import/ca/confirm")
+@auth_required(permission="create")
 def import_ca_confirm():
     """Add the people from the previewed CA lists that the workbook still does not have."""
     if not valid_csrf(request.form.get("csrf_token")):
@@ -656,6 +1046,7 @@ def import_ca_confirm():
             )
             for person, stt in zip(plan["add"], stts):
                 person["stt"] = stt
+                audit("create", {"stt": stt, "name": person["values"]["TÊN THƯỜNG DÙNG"]}, {"reason": f"Nhập từ file CA ({person['file']})"})
                 if person["quarter"]:
                     # Saved before the refresh below, so the new records pick their khu phố up as they load.
                     set_record_attribute(state["workbook"], person["citizen_id"], "quarter", person["quarter"])
@@ -670,6 +1061,7 @@ def import_ca_confirm():
 
 
 @app.post("/import/ca/cancel")
+@auth_required(permission="create")
 def import_ca_cancel():
     if valid_csrf(request.form.get("csrf_token")):
         state.pop("import_pending", None)
@@ -689,7 +1081,7 @@ def change_deleted_flag(deleted):
         flash("Hãy chọn ít nhất một hồ sơ.", "error")
         return redirect(url_for("index"))
 
-    citizen_ids, missing, without_citizen_id = [], [], []
+    citizen_ids, missing, without_citizen_id, records = [], [], [], []
     for stt in selected_stt:
         record = find_record(stt)
         if record is None:
@@ -698,8 +1090,11 @@ def change_deleted_flag(deleted):
             without_citizen_id.append(stt)
         else:
             citizen_ids.append(record["citizen_id"])
+            records.append(record)
     if citizen_ids:
         set_records_deleted(state["workbook"], citizen_ids, deleted)
+        for record in records:
+            audit("delete" if deleted else "restore", record, {"reason": "Xóa mềm" if deleted else "Khôi phục"})
         refresh_state(force=True)
         action = "Đã xóa" if deleted else "Đã khôi phục"
         flash(f"{action} {len(citizen_ids)} hồ sơ." + (" Hồ sơ vẫn còn trong tệp Excel và có thể khôi phục." if deleted else ""), "success")
@@ -711,16 +1106,19 @@ def change_deleted_flag(deleted):
 
 
 @app.post("/bulk/delete")
+@auth_required(permission="delete")
 def bulk_delete():
     return change_deleted_flag(True)
 
 
 @app.post("/bulk/restore")
+@auth_required(permission="delete")
 def bulk_restore():
     return change_deleted_flag(False)
 
 
 @app.post("/export/batch")
+@auth_required(permission="export")
 def export_batch_excel():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -758,11 +1156,13 @@ def export_batch_excel():
         flash(f"Không thể tạo tệp Excel hàng loạt: {error}", "error")
         return redirect(url_for("index"))
     state["last_output_dir"] = output_dir
+    audit("export", None, {"reason": f"Xuất Excel hàng loạt {len(records)} hồ sơ: {output.name}"})
     flash(f"Đã tạo tệp Excel danh sách cho {len(records)} hồ sơ: {output.name}.", "success")
     return redirect(url_for("download", filename=output.name))
 
 
 @app.post("/export/dien")
+@auth_required(permission="export")
 def export_by_dien():
     if not valid_csrf(request.form.get("csrf_token")):
         flash("Phiên làm việc đã hết hạn. Hãy làm mới trang và thử lại.", "error")
@@ -805,6 +1205,7 @@ def export_by_dien():
     if not written:
         return redirect(url_for("index"))
 
+    audit("export", None, {"reason": f"Xuất Excel theo diện: {', '.join(path.name for path in written)}"})
     state["last_output_dir"] = output_dir
     if len(written) == 1:
         flash(f"Đã tạo tệp Excel: {written[0].name}.", "success")
@@ -820,12 +1221,97 @@ def export_by_dien():
 
 
 @app.get("/downloads/<path:filename>")
+@auth_required(permission="read")
 def download(filename):
+    # Word files are "in" (print); anything else a person can download is an exported Excel/ZIP file.
+    if Path(filename).suffix.lower() != ".docx" and not current_user().get("can_export"):
+        flash("Bạn không có quyền xuất tệp Excel.", "error")
+        return redirect(url_for("index"))
     output_dir = state.get("last_output_dir")
     if output_dir is None or not output_dir.is_dir():
         flash("Không tìm thấy thư mục chứa tệp Word đã tạo.", "error")
         return redirect(url_for("index"))
     return send_from_directory(output_dir, filename, as_attachment=True)
+
+
+@app.get("/tra-cuu")
+def guest_lookup():
+    refresh_state()
+    if state["workbook"] is None:
+        return render_template_string(
+            GUEST_PAGE,
+            mode=None, cccd="", record=None, sections=[], values={}, errors=[], 
+            signature="", csrf=csrf_token(), cccd_field_name="",
+        )
+    return render_guest_form(mode=None, cccd="")
+
+
+@app.post("/tra-cuu")
+def guest_lookup_post():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Vui lòng nhập số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    record = find_record_by_citizen_id(cccd)
+    if record:
+        return render_guest_form(mode="readonly", cccd=cccd, record=record)
+    else:
+        return render_guest_form(mode="create", cccd=cccd)
+
+
+@app.post("/tra-cuu/save")
+def guest_save():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    if state["workbook"].suffix.lower() == ".xlsm":
+        flash("Hệ thống không hỗ trợ lưu hồ sơ vào tệp .xlsm.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Thiếu số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    # Check if CCCD already exists (prevent duplicate)
+    existing = find_record_by_citizen_id(cccd)
+    if existing:
+        flash("Hồ sơ với số CCCD này đã tồn tại.", "error")
+        return render_guest_form(mode="readonly", cccd=cccd, record=existing)
+    definitions = field_definitions()
+    values = {definition["name"]: request.form.get(definition["name"], "") for definition in definitions}
+    values_by_column = {definition["column"]: values[definition["name"]] for definition in definitions}
+    values_for_validation = {column: raw for column, raw in values_by_column.items()}
+    values_for_validation["__original_stt"] = ""
+    validation_errors = validate_form_values(values_for_validation)
+    if validation_errors:
+        return render_guest_form(mode="create", cccd=cccd, values=values, errors=validation_errors)
+    headers_by_column = {definition["column"]: definition["header"] for definition in definitions}
+    updates = {column: coerce_cell_value(headers_by_column[column], raw) for column, raw in values_by_column.items()}
+    try:
+        row, stt, backup = save_person(
+            state["workbook"], state["sheet"], updates, request.form.get("signature", ""),
+        )
+        refresh_state(force=True)
+        audit("create", find_record_by_citizen_id(cccd), {"reason": f"Khách tự nhập (CCCD {cccd})"})
+        flash(f"Đã tạo hồ sơ thành công (STT {stt}). Cảm ơn bạn!", "success")
+        # After saving, look up the new record and show it in readonly mode
+        new_record = find_record_by_citizen_id(cccd)
+        if new_record:
+            return render_guest_form(mode="readonly", cccd=cccd, record=new_record)
+        return redirect(url_for("guest_lookup"))
+    except Exception as error:
+        logging.exception("Guest could not save record: %s", error)
+        return render_guest_form(mode="create", cccd=cccd, values=values, errors=[str(error)])
 
 
 @app.errorhandler(413)
@@ -846,19 +1332,55 @@ def lan_address():
         probe.close()
 
 
+@app.get("/admin/audit-log")
+@auth_required(role="admin")
+def admin_audit_log():
+    from quan_ly_ho_so.audit import get_audit_logs
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    stt = request.args.get("stt", "").strip() or None
+    per_page = 50
+    entries, total = get_audit_logs(limit=per_page, offset=(page - 1) * per_page, stt=stt)
+    pages = max(1, (total + per_page - 1) // per_page)
+    return render_template_string(
+        AUDIT_LOG_PAGE,
+        entries=entries,
+        total=total,
+        page=page,
+        pages=pages,
+        stt=stt,
+        csrf=csrf_token(),
+        current_user=current_user(),
+    )
+
+
 def main():
     if not TEMPLATE.is_file():
         raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
+    auth_database_connection().close()
     # QLHS_HOST=0.0.0.0 opens the app to the local network; by default only this computer can reach it.
-    host = os.environ.get("QLHS_HOST", "127.0.0.1")
+    host = os.environ.get("QLHS_HOST") or os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
+    port = int(os.environ.get("FLASK_RUN_PORT", "8765"))
+    debug = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true", "yes")
+    open_browser = os.environ.get("OPEN_BROWSER", "1").lower() in ("1", "true", "yes")
     shared = host not in ("127.0.0.1", "localhost", "::1")
-    if shared and not app.config["ACCESS_PASSWORD"]:
-        raise SystemExit("Mở ứng dụng cho mạng LAN cần mật khẩu: hãy đặt biến môi trường QLHS_PASSWORD rồi chạy lại.")
+    if shared:
+        admin = get_user_by_username(DEFAULT_ADMIN_USERNAME)
+        if admin and check_password_hash(admin["password_hash"], DEFAULT_ADMIN_PASSWORD):
+            raise SystemExit(
+                "Tài khoản quản trị vẫn dùng mật khẩu mặc định nên chưa thể mở cho mạng LAN. "
+                "Hãy chạy ứng dụng bình thường (chỉ máy này), đăng nhập quản trị và đổi mật khẩu trước."
+            )
     load_saved_workbook()
     if shared:
-        logging.info("Máy khác trong mạng nội bộ vào bằng: http://%s:8765 (cần mật khẩu)", lan_address())
-    threading.Timer(0.7, lambda: webbrowser.open("http://127.0.0.1:8765")).start()
-    app.run(host=host, port=8765, debug=False)
+        logging.info("Máy khác trong mạng nội bộ vào bằng: http://%s:%d (cần tài khoản đăng nhập)", lan_address(), port)
+    if open_browser:
+        local_host = "127.0.0.1" if shared else host
+        threading.Timer(0.7, lambda: webbrowser.open(f"http://{local_host}:{port}")).start()
+    app.run(host=host, port=port, debug=debug)
+
 
 
 if __name__ == "__main__":
