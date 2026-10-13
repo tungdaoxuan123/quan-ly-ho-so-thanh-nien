@@ -78,7 +78,14 @@ from quan_ly_ho_so.attachments import AttachmentError, document_thumbnail, prepa
 from quan_ly_ho_so.audit import compute_changes, get_audit_logs, log_action
 from quan_ly_ho_so.errors import StaleWorkbookError
 from quan_ly_ho_so.forms.enums import NvqsStatus
-from quan_ly_ho_so.forms.fields import coerce_cell_value, field_definitions, form_values, validate_form_values
+from quan_ly_ho_so.forms.fields import (
+    CITIZEN_ID_ERROR,
+    coerce_cell_value,
+    field_definitions,
+    form_values,
+    valid_citizen_id,
+    validate_form_values,
+)
 from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import fold
@@ -1259,6 +1266,9 @@ def guest_lookup_post():
     if not cccd:
         flash("Vui lòng nhập số CCCD.", "error")
         return redirect(url_for("guest_lookup"))
+    if not valid_citizen_id(cccd):
+        flash(CITIZEN_ID_ERROR, "error")
+        return redirect(url_for("guest_lookup"))
     record = find_record_by_citizen_id(cccd)
     if record:
         return render_guest_form(mode="readonly", cccd=cccd, record=record)
@@ -1279,6 +1289,9 @@ def guest_start_create():
     cccd = request.form.get("cccd", "").strip()
     if not cccd:
         flash("Vui lòng nhập số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    if not valid_citizen_id(cccd):
+        flash(CITIZEN_ID_ERROR, "error")
         return redirect(url_for("guest_lookup"))
     record = find_record_by_citizen_id(cccd)
     if record:
@@ -1301,6 +1314,9 @@ def guest_save():
     cccd = request.form.get("cccd", "").strip()
     if not cccd:
         flash("Thiếu số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    if not valid_citizen_id(cccd):
+        flash(CITIZEN_ID_ERROR, "error")
         return redirect(url_for("guest_lookup"))
     # Check if CCCD already exists (prevent duplicate)
     existing = find_record_by_citizen_id(cccd)

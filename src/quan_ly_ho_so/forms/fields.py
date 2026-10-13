@@ -1,9 +1,19 @@
 """Form field metadata derived from the loaded workbook's headers, and validation."""
 
+import re
+
 from quan_ly_ho_so.config import FORM_GROUPS, LONG_TEXT_HEADERS, NUMERIC_HEADERS
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import display_value, fold
 from quan_ly_ho_so.workbook.cache import database_connection
+
+
+CITIZEN_ID_ERROR = "Số CCCD phải gồm đúng 12 chữ số."
+
+
+def valid_citizen_id(value):
+    """A CCCD is exactly 12 digits."""
+    return re.fullmatch(r"[0-9]{12}", value) is not None
 
 
 def field_definitions():
@@ -72,6 +82,10 @@ def validate_form_values(values):
         original_stt = values.get("__original_stt", "")
         connection = database_connection()
         try:
+            # Records already in the workbook may carry an odd CCCD; only a value being typed in now must be 12 digits.
+            stored = connection.execute("SELECT citizen_id FROM records WHERE stt = ? LIMIT 1", (original_stt,)).fetchone()
+            if not valid_citizen_id(citizen_id) and (stored is None or stored[0] != citizen_id):
+                errors.append(CITIZEN_ID_ERROR)
             duplicate = connection.execute(
                 "SELECT 1 FROM records WHERE citizen_id_key = ? AND stt <> ? LIMIT 1",
                 (fold(citizen_id), original_stt),

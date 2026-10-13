@@ -389,7 +389,7 @@ FORM_PAGE = r"""
 {% if message %}<p class="notice">{{ message }}</p>{% endif %}{% if errors %}<div class="notice error"><strong>Chưa thể lưu hồ sơ:</strong><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>{% endif %}
 <form class="record" action="{{ url_for('save_person_route') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="original_stt" value="{{ original_stt }}"><input type="hidden" name="signature" value="{{ signature }}"><input type="hidden" name="view" value="form">
   <div class="status-card"><label>Diện (nghĩa vụ quân sự)<select name="nvqs_type" {% if read_only %}disabled{% endif %}><option value="">&lt;chưa có&gt;</option>{% for code, text in nvqs_options %}<option value="{{ code }}" {% if nvqs_type == code %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label><p class="hint">Diện được lưu cùng hồ sơ trong cơ sở dữ liệu của ứng dụng.</p></div>
-  {% for section in sections %}<details class="section-card" {% if section.name in open_sections %}open{% endif %}><summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary><div class="section-body"><div class="grid">{% for field in section.fields %}<label class="{{ 'wide' if field.input_type == 'textarea' else '' }}"><span>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</span>{% if field.input_type == 'textarea' %}<textarea name="{{ field.name }}" {% if read_only %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>{% else %}<input type="{{ field.input_type }}" name="{{ field.name }}" value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if read_only %}readonly{% endif %}>{% endif %}</label>{% endfor %}</div></div></details>{% endfor %}
+  {% for section in sections %}<details class="section-card" {% if section.name in open_sections %}open{% endif %}><summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary><div class="section-body"><div class="grid">{% for field in section.fields %}<label class="{{ 'wide' if field.input_type == 'textarea' else '' }}"><span>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</span>{% if field.input_type == 'textarea' %}<textarea name="{{ field.name }}" {% if read_only %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>{% else %}<input type="{{ field.input_type }}" name="{{ field.name }}"{% if field.header == 'Căn cước' %} maxlength="12" inputmode="numeric"{% endif %} value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if read_only %}readonly{% endif %}>{% endif %}</label>{% endfor %}</div></div></details>{% endfor %}
   <details class="section-card" {% if open_documents %}open{% endif %}><summary><span>Hồ sơ liên quan</span><span class="field-count">{{ documents|length + attachments|length }} tệp</span></summary><div class="section-body">
     {% if not original_stt %}
       <p class="doc-empty">Hãy lưu hồ sơ trước, sau đó mở lại để thêm tài liệu liên quan.</p>
@@ -603,7 +603,7 @@ PREVIEW_PAGE = r"""
 
   <details class="extra-card" {% if extra_fields %}open{% endif %}>
     <summary><span>Trường bổ sung (không hiển thị trong biểu mẫu in)</span><span class="field-count">{{ extra_fields|length }} trường</span></summary>
-    <div class="section-body"><div class="grid">{% for field in extra_fields %}<label class="{{ 'wide' if field.input_type == 'textarea' else '' }}"><span>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</span>{% if field.input_type == 'textarea' %}<textarea name="{{ field.name }}" form="preview-form" {% if read_only %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>{% else %}<input type="{{ field.input_type }}" name="{{ field.name }}" form="preview-form" value="{{ values.get(field.name, '') }}" {% if read_only %}readonly{% endif %}>{% endif %}</label>{% endfor %}</div></div>
+    <div class="section-body"><div class="grid">{% for field in extra_fields %}<label class="{{ 'wide' if field.input_type == 'textarea' else '' }}"><span>{{ field.label }}{% if field.required %} <span class="required">*</span>{% endif %}</span>{% if field.input_type == 'textarea' %}<textarea name="{{ field.name }}" form="preview-form" {% if read_only %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>{% else %}<input type="{{ field.input_type }}" name="{{ field.name }}"{% if field.header == 'Căn cước' %} maxlength="12" inputmode="numeric"{% endif %} form="preview-form" value="{{ values.get(field.name, '') }}" {% if read_only %}readonly{% endif %}>{% endif %}</label>{% endfor %}</div></div>
   </details>
 
   <script>
@@ -697,7 +697,7 @@ GUEST_PAGE = r"""
       <input type="hidden" name="csrf_token" value="{{ csrf }}">
       <div class="search-box">
         <label>Số căn cước công dân (CCCD)
-          <input type="text" name="cccd" value="{{ cccd }}" placeholder="Nhập 12 chữ số CCCD" pattern="[0-9]{12}" title="CCCD gồm 12 chữ số" required autofocus>
+          <input type="text" name="cccd" value="{{ cccd }}" placeholder="Nhập 12 chữ số CCCD" pattern="[0-9]{12}" maxlength="12" inputmode="numeric" title="CCCD gồm 12 chữ số" required autofocus>
         </label>
         <button type="submit">Tra cứu</button>
       </div>
@@ -757,7 +757,7 @@ GUEST_PAGE = r"""
           {% if field.input_type == 'textarea' %}
           <textarea name="{{ field.name }}" {% if field.name == cccd_field_name %}readonly{% endif %}>{{ values.get(field.name, '') }}</textarea>
           {% else %}
-          <input type="{{ field.input_type }}" name="{{ field.name }}" value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if field.name == cccd_field_name %}readonly{% endif %}>
+          <input type="{{ field.input_type }}" name="{{ field.name }}"{% if field.header == 'Căn cước' %} maxlength="12" inputmode="numeric"{% endif %} value="{{ values.get(field.name, '') }}" {% if field.required %}required{% endif %} {% if field.name == cccd_field_name %}readonly{% endif %}>
           {% endif %}
         </label>
         {% endfor %}

@@ -354,6 +354,45 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertIn("/login", locked.headers["Location"])
         self.assertEqual(self.admin_client().get("/").status_code, 200)
 
+    def test_citizen_id_must_be_exactly_twelve_digits_when_typed_in(self):
+        from quan_ly_ho_so.forms.fields import CITIZEN_ID_ERROR
+
+        guest = app.app.test_client()
+        with guest:
+            page = guest.get("/tra-cuu").get_data(as_text=True)
+            self.assertIn('maxlength="12"', page)
+            csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+            for bad in ("12345678901", "1234567890123", "00120500000a", "001205 00001"):
+                for url in ("/tra-cuu", "/tra-cuu/them", "/tra-cuu/save"):
+                    response = guest.post(url, data={"csrf_token": csrf, "cccd": bad}, follow_redirects=True)
+                    self.assertIn(CITIZEN_ID_ERROR, response.get_data(as_text=True), (url, bad))
+            self.assertEqual(app.query_records("", {}, limit=50, offset=0)[1], 3)
+
+        staff = self.admin_client()
+        with staff:
+            form = staff.get("/person/new").get_data(as_text=True)
+            self.assertIn('maxlength="12"', form)
+            csrf = re.search(r'name="csrf_token" value="([^"]+)"', form).group(1)
+            signature = re.search(r'name="signature" value="([^"]*)"', form).group(1)
+            name_column, cccd_column = app.state["headers"]["TÊN THƯỜNG DÙNG"], app.state["headers"]["Căn cước"]
+
+            def save(original_stt, name, cccd):
+                data = {"csrf_token": csrf, "signature": signature, f"column_{name_column}": name, f"column_{cccd_column}": cccd}
+                if original_stt:
+                    data["original_stt"] = original_stt
+                return staff.post("/person/save", data=data).get_data(as_text=True)
+
+            self.assertIn(CITIZEN_ID_ERROR, save("", "NGƯỜI MỚI", "12345"))
+            self.assertEqual(app.query_records("", {}, limit=50, offset=0)[1], 3)
+            # A CCCD already in the workbook that is not 12 digits does not stop the record being edited...
+            connection = __import__("sqlite3").connect(app.state["database"])
+            connection.execute("UPDATE records SET citizen_id = '12345' WHERE stt = '1'")
+            connection.commit()
+            connection.close()
+            self.assertNotIn(CITIZEN_ID_ERROR, save("1", "NGUYỄN VĂN AN SỬA", "12345"))
+            # ...but changing it to something else that is not 12 digits does.
+            self.assertIn(CITIZEN_ID_ERROR, save("1", "NGUYỄN VĂN AN", "123456"))
+
     def test_filter_options_group_case_variations(self):
         options = app.query_filter_options("ethnicity")
         kinh_options = [value for value in options if app.fold(value) == "kinh"]
