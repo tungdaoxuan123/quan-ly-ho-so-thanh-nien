@@ -178,13 +178,25 @@ class NewFeaturesTests(unittest.TestCase):
         self.assertIn("NGUYỄN VĂN AN", existing_html)
         self.assertIn("readonly", existing_html)
 
-        # 3. Lookup non-existing CCCD -> Create mode with form
-        resp_new = client.post("/tra-cuu", data={"cccd": "001209999999", "csrf_token": csrf})
+        # 3. Lookup non-existing CCCD -> asked first, no form yet
+        resp_ask = client.post("/tra-cuu", data={"cccd": "001209999999", "csrf_token": csrf})
+        self.assertEqual(resp_ask.status_code, 200)
+        ask_html = resp_ask.get_data(as_text=True)
+        self.assertIn("Chưa có hồ sơ", ask_html)
+        self.assertIn("Có, thêm thông tin của tôi", ask_html)
+        self.assertNotIn("Gửi hồ sơ", ask_html)
+        self.assertNotIn('action="/tra-cuu/save"', ask_html)
+
+        # ...and only after agreeing does the form appear
+        resp_new = client.post("/tra-cuu/them", data={"cccd": "001209999999", "csrf_token": csrf})
         self.assertEqual(resp_new.status_code, 200)
         new_html = resp_new.get_data(as_text=True)
         self.assertIn("Không tìm thấy hồ sơ với CCCD", new_html)
         self.assertIn("001209999999", new_html)
         self.assertIn("Gửi hồ sơ", new_html)
+
+        self.assertIn("Hồ sơ đã tồn tại", client.post("/tra-cuu/them", data={"cccd": "001205000001", "csrf_token": csrf}).get_data(as_text=True))
+        self.assertEqual(client.post("/tra-cuu/them", data={"cccd": "001209999999", "csrf_token": "x"}).status_code, 302)
 
         # 4. Guest submit new record
         sig = re.search(r'name="signature" value="([^"]*)"', new_html).group(1)

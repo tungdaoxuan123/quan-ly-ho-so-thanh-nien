@@ -143,7 +143,7 @@ def inject_user():
 
 @app.before_request
 def require_authentication():
-    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_save"}
+    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_start_create", "guest_save"}
     if request.endpoint in exempt_endpoints or request.endpoint is None:
         return None
     user = current_user()
@@ -1262,8 +1262,28 @@ def guest_lookup_post():
     record = find_record_by_citizen_id(cccd)
     if record:
         return render_guest_form(mode="readonly", cccd=cccd, record=record)
-    else:
-        return render_guest_form(mode="create", cccd=cccd)
+    # No profile yet: ask first, so nobody lands in a long form by accident.
+    return render_guest_form(mode="confirm", cccd=cccd)
+
+
+@app.post("/tra-cuu/them")
+def guest_start_create():
+    """The guest said yes to adding their own profile: show the form."""
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Vui lòng nhập số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    record = find_record_by_citizen_id(cccd)
+    if record:
+        return render_guest_form(mode="readonly", cccd=cccd, record=record)
+    return render_guest_form(mode="create", cccd=cccd)
 
 
 @app.post("/tra-cuu/save")

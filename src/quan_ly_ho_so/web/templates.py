@@ -729,6 +729,18 @@ GUEST_PAGE = r"""
   </details>
   {% endfor %}
 
+  {% elif mode == 'confirm' %}
+  <div class="card">
+    <p><strong>Chưa có hồ sơ</strong> với CCCD <strong>{{ cccd }}</strong>.</p>
+    <p class="muted">Bạn có muốn thêm thông tin của mình vào hệ thống không? Sau khi gửi, hồ sơ chỉ xem được, không tự sửa lại được.</p>
+    <form action="{{ url_for('guest_start_create') }}" method="post" class="actions">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="cccd" value="{{ cccd }}">
+      <button type="submit">Có, thêm thông tin của tôi</button>
+      <a class="button secondary" href="{{ url_for('guest_lookup') }}">Không, quay lại</a>
+    </form>
+  </div>
+
   {% elif mode == 'create' %}
   <p class="notice info">Không tìm thấy hồ sơ với CCCD <strong>{{ cccd }}</strong>. Vui lòng điền thông tin bên dưới để tạo hồ sơ mới.</p>
   <form action="{{ url_for('guest_save') }}" method="post">
