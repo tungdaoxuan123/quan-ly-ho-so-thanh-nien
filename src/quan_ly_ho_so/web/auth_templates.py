@@ -23,8 +23,6 @@ LOGIN_PAGE = r"""
     button[type="submit"]:hover { background: #174873; }
     .notice { padding: 12px 14px; border-radius: 8px; background: #e9f4eb; color: #265b31; margin-bottom: 18px; font-size: 14px; }
     .notice.error { background: #fdecec; color: #8f2f2f; }
-    .help-hint { margin-top: 24px; padding-top: 18px; border-top: 1px solid #eef2f7; font-size: 13px; color: #637089; line-height: 1.55; text-align: center; }
-    .help-hint strong { color: #163d68; }
   </style>
 </head>
 <body>
@@ -55,10 +53,6 @@ LOGIN_PAGE = r"""
       </div>
       <button type="submit">Đăng nhập</button>
     </form>
-    <div class="help-hint">
-      Tài khoản Quản trị viên mặc định: <strong>admin</strong> / <strong>admin123</strong><br>
-      Tài khoản người dùng mới tạo hoặc sau reset: mật khẩu mặc định là <strong>123456</strong> (hệ thống sẽ yêu cầu cài mật khẩu mới khi đăng nhập).
-    </div>
   </div>
   <script>
     function togglePasswordVisibility(fieldId) {

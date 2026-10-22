@@ -435,6 +435,13 @@ class AuthAndPermissionsTests(unittest.TestCase):
         self.assertEqual(user["can_export"], 1)
         self.assertEqual(get_user_by_username("late")["can_export"], 1)
 
+    def test_login_page_does_not_reveal_default_passwords(self):
+        page = app.app.test_client().get("/login").get_data(as_text=True)
+        self.assertIn('name="password"', page)
+        self.assertNotIn("admin123", page)
+        self.assertNotIn("123456", page)
+        self.assertNotIn("mật khẩu mặc định", page.lower())
+
     def test_default_user_creation_and_first_login_password_change(self):
         client = app.app.test_client()
         self._login(client, "admin", "admin123")
