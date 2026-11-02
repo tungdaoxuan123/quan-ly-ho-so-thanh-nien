@@ -88,7 +88,7 @@ from quan_ly_ho_so.forms.fields import (
 )
 from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
 from quan_ly_ho_so.state import state
-from quan_ly_ho_so.utils.text import fold
+from quan_ly_ho_so.utils.text import display_value, fold
 from quan_ly_ho_so.web.templates import (
     ADMIN_PAGE,
     AUDIT_LOG_PAGE,
@@ -145,12 +145,20 @@ def guard_network():
 
 @app.context_processor
 def inject_user():
-    return {"current_user": current_user()}
+    user = current_user()
+    pending_count = 0
+    if user and (user.get("is_admin") or user.get("can_update")):
+        try:
+            from quan_ly_ho_so.approvals import count_pending_requests
+            pending_count = count_pending_requests()
+        except Exception:
+            pending_count = 0
+    return {"current_user": user, "pending_request_count": pending_count}
 
 
 @app.before_request
 def require_authentication():
-    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_start_create", "guest_save"}
+    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_start_create", "guest_save", "guest_update_request"}
     if request.endpoint in exempt_endpoints or request.endpoint is None:
         return None
     user = current_user()
@@ -312,6 +320,69 @@ def admin_dashboard():
         csrf=csrf_token(),
         current_user=current_user(),
     )
+
+
+@app.get("/admin/requests")
+@app.get("/admin/approvals")
+@auth_required(permissions=["update"], require_all=False)
+def admin_approvals_queue():
+    from quan_ly_ho_so.approvals import count_pending_requests, list_requests
+    from quan_ly_ho_so.web.approvals_templates import APPROVALS_PAGE
+    status_filter = request.args.get("status", "pending").strip().lower()
+    query = request.args.get("q", "").strip()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        page = 1
+    limit = 20
+    offset = (page - 1) * limit
+    reqs, total_filtered = list_requests(status=status_filter, query=query, limit=limit, offset=offset)
+    pending_count = count_pending_requests()
+    _, total_all = list_requests(status="all", limit=1, offset=0)
+    total_pages = max(1, (total_filtered + limit - 1) // limit)
+    return render_template_string(
+        APPROVALS_PAGE,
+        requests=reqs,
+        pending_count=pending_count,
+        total_requests=total_all,
+        total_filtered=total_filtered,
+        current_status=status_filter,
+        current_query=query,
+        current_page=page,
+        total_pages=total_pages,
+        csrf=csrf_token(),
+        current_user=current_user(),
+    )
+
+
+@app.post("/admin/requests/<int:request_id>/review")
+@auth_required(permissions=["update"], require_all=False)
+def admin_review_request(request_id):
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("admin_approvals_queue"))
+    action = request.form.get("action", "").strip().lower()
+    note = request.form.get("note", "").strip()
+    return_status = request.form.get("return_status", "pending")
+    return_q = request.form.get("return_q", "")
+    user = current_user()
+    reviewer = user.get("username", "admin")
+
+    from quan_ly_ho_so.approvals import approve_request, reject_request
+    try:
+        if action == "approve":
+            approve_request(request_id, reviewer=reviewer, admin_note=note)
+            flash(f"Đã PHÊ DUYỆT yêu cầu #{request_id} và đồng bộ thông tin hồ sơ thành công.", "success")
+        elif action == "reject":
+            reject_request(request_id, reviewer=reviewer, rejection_reason=note)
+            flash(f"Đã TỪ CHỐI yêu cầu #{request_id}. Hồ sơ đã được tự động mở khóa.", "info")
+        else:
+            flash("Hành động xét duyệt không hợp lệ.", "error")
+    except Exception as error:
+        logging.exception("Error reviewing request %s: %s", request_id, error)
+        flash(f"Lỗi khi xét duyệt yêu cầu #{request_id}: {error}", "error")
+
+    return redirect(url_for("admin_approvals_queue", status=return_status, q=return_q))
 
 
 @app.post("/admin/users/create")
@@ -1348,6 +1419,94 @@ def guest_save():
     except Exception as error:
         logging.exception("Guest could not save record: %s", error)
         return render_guest_form(mode="create", cccd=cccd, values=values, errors=[str(error)])
+
+
+@app.post("/tra-cuu/cap-nhat")
+@app.post("/tra-cuu/update")
+def guest_update_request():
+    if not valid_csrf(request.form.get("csrf_token")):
+        flash("Biểu mẫu đã hết hạn. Hãy thử lại.", "error")
+        return redirect(url_for("guest_lookup"))
+    refresh_state()
+    if state["workbook"] is None:
+        flash("Hệ thống chưa sẵn sàng. Vui lòng liên hệ quản trị viên.", "error")
+        return redirect(url_for("guest_lookup"))
+    cccd = request.form.get("cccd", "").strip()
+    if not cccd:
+        flash("Thiếu số CCCD.", "error")
+        return redirect(url_for("guest_lookup"))
+    if not valid_citizen_id(cccd):
+        flash(CITIZEN_ID_ERROR, "error")
+        return redirect(url_for("guest_lookup"))
+    record = find_record_by_citizen_id(cccd)
+    if not record:
+        flash("Không tìm thấy hồ sơ thanh niên với số CCCD này.", "error")
+        return redirect(url_for("guest_lookup"))
+
+    # Temporary Lockout (Spam Prevention)
+    from quan_ly_ho_so.approvals import (
+        IDENTITY_CRITICAL_HEADERS,
+        create_profile_edit_request,
+        has_pending_request,
+    )
+    if has_pending_request(cccd):
+        flash("Hồ sơ đang có một yêu cầu cập nhật chờ xét duyệt. Bạn tạm thời không thể gửi thêm yêu cầu mới.", "error")
+        return render_guest_form(mode="readonly", cccd=cccd, record=record)
+
+    definitions = field_definitions()
+    labels_by_name = {definition["name"]: definition["header"] for definition in definitions}
+    raw_values = {}
+    for definition in definitions:
+        name = definition["name"]
+        header = definition["header"]
+        if name in request.form:
+            raw_values[name] = request.form[name]
+        else:
+            raw_values[name] = display_value(record["data"].get(header))
+
+    # Strictly prohibit user changes to identity-critical fields:
+    # Always force them to match the existing record's original data!
+    for definition in definitions:
+        header = definition["header"]
+        if header in IDENTITY_CRITICAL_HEADERS:
+            raw_values[definition["name"]] = display_value(record["data"].get(header))
+
+    # Validate general fields
+    values_by_column = {definition["column"]: raw_values[definition["name"]] for definition in definitions}
+    values_for_validation = {column: raw for column, raw in values_by_column.items()}
+    values_for_validation["__original_stt"] = record["stt"]
+    validation_errors = validate_form_values(values_for_validation)
+    if validation_errors:
+        return render_guest_form(mode="readonly", cccd=cccd, record=record, values=raw_values, errors=validation_errors)
+
+    # Compute changes (diff view)
+    old_values = form_values(record)
+    changes = compute_changes(old_values, raw_values, labels_by_name)
+
+    # Ensure no identity-critical fields are in the change diff
+    changes = [c for c in changes if c["field"] not in IDENTITY_CRITICAL_HEADERS]
+
+    if not changes:
+        flash("Không có thông tin nào thay đổi để gửi yêu cầu cập nhật.", "error")
+        return render_guest_form(mode="readonly", cccd=cccd, record=record, values=raw_values)
+
+    try:
+        name_header = "TÊN THƯỜNG DÙNG"
+        record_name = record["data"].get(name_header, "") or record["name"]
+        req_id = create_profile_edit_request(
+            cccd=cccd,
+            stt=str(record["stt"]),
+            record_name=record_name,
+            submitted_values=raw_values,
+            original_values=old_values,
+            changes=changes,
+        )
+        flash("Yêu cầu cập nhật thông tin đã được gửi thành công đến Quản trị viên để xét duyệt.", "success")
+        return render_guest_form(mode="readonly", cccd=cccd, record=record)
+    except Exception as error:
+        logging.exception("Could not create profile edit request: %s", error)
+        flash(f"Lỗi khi gửi yêu cầu cập nhật: {error}", "error")
+        return render_guest_form(mode="readonly", cccd=cccd, record=record, values=raw_values)
 
 
 @app.errorhandler(413)

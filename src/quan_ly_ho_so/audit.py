@@ -30,6 +30,17 @@ ACTION_ALIASES: Dict[str, str] = {
     "xuat excel": "export",
     "xuat_excel": "export",
     "xuat": "export",
+    "yeu cau": "request_update",
+    "yeu cau sua": "request_update",
+    "yeu_cau_chinh_sua": "request_update",
+    "request_update": "request_update",
+    "duyet": "approve_update",
+    "phe duyet": "approve_update",
+    "phe_duyet": "approve_update",
+    "approve_update": "approve_update",
+    "tu choi": "reject_update",
+    "tu_choi": "reject_update",
+    "reject_update": "reject_update",
 }
 
 

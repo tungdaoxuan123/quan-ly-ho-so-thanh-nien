@@ -120,7 +120,7 @@ PAGE = r"""
   </style>
 </head>
 <body>
-  <header class="topbar"><div class="topbar-inner"><span class="brand-mark">HS</span><div><h1>Quản lý hồ sơ thanh niên</h1><div class="topbar-sub">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</div></div>{% if current_user %}<div class="user-nav"><span>Xin chào, <strong>{{ current_user.username }}</strong>{% if current_user.is_admin %} · Quản trị viên{% endif %}</span><a href="{{ url_for('user_profile') }}">Tài khoản &amp; quyền</a>{% if current_user.is_admin %}<a href="{{ url_for('admin_dashboard') }}">Quản trị</a><a href="{{ url_for('admin_audit_log') }}">Nhật ký</a>{% endif %}<a href="{{ url_for('logout') }}">Đăng xuất</a></div>{% endif %}</div></header>
+  <header class="topbar"><div class="topbar-inner"><span class="brand-mark">HS</span><div><h1>Quản lý hồ sơ thanh niên</h1><div class="topbar-sub">Tra cứu, cập nhật hồ sơ và tạo tệp Word từ Excel</div></div>{% if current_user %}<div class="user-nav"><span>Xin chào, <strong>{{ current_user.username }}</strong>{% if current_user.is_admin %} · Quản trị viên{% endif %}</span><a href="{{ url_for('user_profile') }}">Tài khoản &amp; quyền</a>{% if current_user.is_admin or current_user.can_update %}<a href="{{ url_for('admin_approvals_queue') }}">Duyệt yêu cầu{% if pending_request_count %} <span class="badge warning" style="padding: 1px 6px; font-size: 11px; border-radius: 10px; background: #fff3cd; color: #856404; font-weight: 700;">{{ pending_request_count }}</span>{% endif %}</a>{% endif %}{% if current_user.is_admin %}<a href="{{ url_for('admin_dashboard') }}">Quản trị</a><a href="{{ url_for('admin_audit_log') }}">Nhật ký</a>{% endif %}<a href="{{ url_for('logout') }}">Đăng xuất</a></div>{% endif %}</div></header>
   <main class="container">
   {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<p class="notice {{ 'error' if category == 'error' else '' }}">{{ message }}</p>{% endfor %}{% endwith %}
   {% if error %}<p class="notice error">{{ error }}</p>{% endif %}
@@ -659,6 +659,16 @@ GUEST_PAGE = r"""
     .notice.error { background: #fdecec; color: #8f2f2f; }
     .notice.success { background: #e9f4eb; color: #265b31; }
     .notice.info { background: #e0edff; color: #163d68; border: 1px solid #b8d5ff; }
+    .notice.warning { background: #fffbeb; color: #b45309; border: 1px solid #fef3c7; }
+    .badge-lock { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; margin-left: 6px; vertical-align: middle; }
+    .locked-field { background: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #475569 !important; cursor: not-allowed; }
+    .diff-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13.5px; background: #fff; border-radius: 6px; overflow: hidden; border: 1px solid #e2e8f0; }
+    .diff-table th, .diff-table td { padding: 9px 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    .diff-table th { background: #f8fafc; font-weight: 600; color: #475569; }
+    .diff-old { color: #b91c1c; background: #fff1f2; }
+    .diff-old del { text-decoration: line-through; }
+    .diff-new { color: #15803d; background: #f0fdf4; font-weight: 600; }
+    .diff-new ins { text-decoration: none; }
     .search-box { display: flex; gap: 12px; align-items: end; }
     .search-box label { flex: 1; }
     .section-card { border: 1px solid #dbe3ee; border-radius: 9px; margin: 14px 0; overflow: hidden; }
@@ -705,29 +715,131 @@ GUEST_PAGE = r"""
   </div>
 
   {% if mode == 'readonly' and record %}
-  <div class="notice info">
-    <span class="info-tooltip" tabindex="0">
-      ℹ️ Hồ sơ đã tồn tại — Chỉ hiển thị thông tin.
-      <span class="tooltip-text">Kiểm tra thông tin và liên hệ admin nếu cần sửa đổi</span>
-    </span>
-  </div>
-  {% for section in sections %}
-  <details class="section-card" {% if loop.first %}open{% endif %}>
-    <summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary>
-    <div class="section-body"><div class="grid">
-      {% for field in section.fields %}
-      <label class="{{ 'wide' if field.input_type == 'textarea' else '' }}">
-        {{ field.label }}
-        {% if field.input_type == 'textarea' %}
-        <textarea class="readonly-field" readonly>{{ values.get(field.name, '') }}</textarea>
-        {% else %}
-        <input type="{{ field.input_type }}" class="readonly-field" value="{{ values.get(field.name, '') }}" readonly>
-        {% endif %}
-      </label>
+    {% if pending_request %}
+    <div class="notice warning">
+      <strong>🔒 Yêu cầu chỉnh sửa đang chờ phê duyệt:</strong>
+      <p style="margin: 4px 0 0;">Bạn đã gửi yêu cầu cập nhật thông tin lúc <strong>{{ pending_request.submitted_at[:19].replace('T', ' ') }}</strong>. Chức năng gửi chỉnh sửa tạm thời bị khóa cho đến khi Quản trị viên xét duyệt yêu cầu này.</p>
+    </div>
+    <div class="card" style="border-left: 4px solid #f59e0b;">
+      <h3 style="margin-top: 0; color: #163d68; font-size: 16px;">Chi tiết các thông tin bạn đã gửi thay đổi (đang chờ duyệt):</h3>
+      <table class="diff-table">
+        <thead>
+          <tr>
+            <th>Trường thông tin</th>
+            <th>Giá trị cũ</th>
+            <th>Giá trị mới đề xuất</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for change in pending_request.changes %}
+          <tr>
+            <td><strong>{{ change.field }}</strong></td>
+            <td class="diff-old"><del>{{ change['from'] or '(trống)' }}</del></td>
+            <td class="diff-new"><ins>{{ change.to or '(trống)' }}</ins></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Read-only view while locked -->
+    <p class="muted">Dưới đây là thông tin hiện tại của hồ sơ trong hệ thống:</p>
+    {% for section in sections %}
+    <details class="section-card" {% if loop.first %}open{% endif %}>
+      <summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary>
+      <div class="section-body"><div class="grid">
+        {% for field in section.fields %}
+        <label class="{{ 'wide' if field.input_type == 'textarea' else '' }}">
+          <span>
+            {{ field.label }}
+            {% if field.is_identity_critical %}
+              <span class="badge-lock">🔒</span>
+            {% endif %}
+          </span>
+          {% if field.input_type == 'textarea' %}
+          <textarea class="readonly-field locked-field" readonly>{{ values.get(field.name, '') }}</textarea>
+          {% else %}
+          <input type="{{ field.input_type }}" class="readonly-field locked-field" value="{{ values.get(field.name, '') }}" readonly>
+          {% endif %}
+        </label>
+        {% endfor %}
+      </div></div>
+    </details>
+    {% endfor %}
+
+    {% else %}
+    <!-- User is unlocked and can edit general profile fields -->
+    {% if latest_request and latest_request.status == 'rejected' %}
+    <div class="notice error">
+      <strong>⚠️ Yêu cầu cập nhật gần nhất đã bị từ chối</strong> (lúc {{ latest_request.reviewed_at[:19].replace('T', ' ') }})
+      {% if latest_request.reviewer_note %}
+      <p style="margin: 4px 0 0;"><strong>Lý do từ chối:</strong> {{ latest_request.reviewer_note }}</p>
+      {% endif %}
+      <p style="margin: 4px 0 0;" class="muted">Hệ thống đã tự động mở khóa. Bạn có thể chỉnh sửa lại thông tin chính xác bên dưới và gửi lại yêu cầu.</p>
+    </div>
+    {% elif latest_request and latest_request.status == 'approved' %}
+    <div class="notice success">
+      <strong>✅ Yêu cầu cập nhật gần nhất của bạn đã được phê duyệt</strong> (lúc {{ latest_request.reviewed_at[:19].replace('T', ' ') }}).
+      {% if latest_request.reviewer_note %}
+      <p style="margin: 4px 0 0;"><strong>Ghi chú:</strong> {{ latest_request.reviewer_note }}</p>
+      {% endif %}
+      <p style="margin: 4px 0 0;">Dữ liệu bên dưới đã được cập nhật chính thức.</p>
+    </div>
+    {% else %}
+    <div class="notice info">
+      <span class="info-tooltip" tabindex="0">
+        ℹ️ Hồ sơ đã tồn tại — Cập nhật thông tin hồ sơ:
+        <span class="tooltip-text">Kiểm tra thông tin và liên hệ admin nếu cần sửa đổi</span>
+      </span>
+      Bạn có thể chỉnh sửa các trường thông tin chung bên dưới và bấm <strong>"Gửi yêu cầu cập nhật"</strong>. Các trường định danh quan trọng (Họ tên, Ngày sinh, CCCD) không thể tự chỉnh sửa để bảo đảm an toàn.
+    </div>
+    {% endif %}
+
+    <form action="{{ url_for('guest_update_request') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf }}">
+      <input type="hidden" name="cccd" value="{{ cccd }}">
+      <input type="hidden" name="signature" value="{{ signature }}">
+      {% for section in sections %}
+      <details class="section-card" {% if loop.first %}open{% endif %}>
+        <summary><span>{{ section.name }}</span><span class="field-count">{{ section.fields|length }} trường</span></summary>
+        <div class="section-body"><div class="grid">
+          {% for field in section.fields %}
+          <label class="{{ 'wide' if field.input_type == 'textarea' else '' }}">
+            <span>
+              {{ field.label }}
+              {% if field.is_identity_critical %}
+                <span class="badge-lock" title="Trường định danh quan trọng - Không thể tự sửa đổi">🔒</span>
+              {% elif field.required %}
+                <span class="required">*</span>
+              {% endif %}
+            </span>
+            {% if field.is_identity_critical %}
+              {% if field.input_type == 'textarea' %}
+              <textarea name="{{ field.name }}" class="readonly-field locked-field" readonly title="Trường định danh không thể sửa đổi">{{ values.get(field.name, '') }}</textarea>
+              {% else %}
+              <input type="{{ field.input_type }}" name="{{ field.name }}" class="readonly-field locked-field" value="{{ values.get(field.name, '') }}" readonly title="Trường định danh không thể sửa đổi">
+              {% endif %}
+            {% else %}
+              {% if field.input_type == 'textarea' %}
+              <textarea name="{{ field.name }}">{{ values.get(field.name, '') }}</textarea>
+              {% else %}
+              <input type="{{ field.input_type }}" name="{{ field.name }}" value="{{ values.get(field.name, '') }}">
+              {% endif %}
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div></div>
+      </details>
       {% endfor %}
-    </div></div>
-  </details>
-  {% endfor %}
+      {% if errors %}
+      <div class="notice error"><strong>Chưa thể gửi yêu cầu:</strong><ul>{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul></div>
+      {% endif %}
+      <div class="actions">
+        <button type="submit">Gửi yêu cầu cập nhật</button>
+        <a class="button secondary" href="{{ url_for('guest_lookup') }}">Quay lại</a>
+      </div>
+    </form>
+    {% endif %}
 
   {% elif mode == 'confirm' %}
   <div class="card">
@@ -813,10 +925,18 @@ def render_preview(title, record=None, values=None, errors=None, message=None):
     )
 
 
-def render_guest_form(mode, cccd="", record=None, values=None, errors=None):
+def render_guest_form(mode, cccd="", record=None, values=None, errors=None, pending_request=None, latest_request=None):
     """Render the guest lookup page in readonly or create mode."""
     from quan_ly_ho_so.forms.fields import field_definitions, form_values
+    from quan_ly_ho_so.approvals import (
+        get_latest_request_by_cccd,
+        get_pending_request_by_cccd,
+        is_identity_critical,
+    )
     definitions = field_definitions()
+    for field in definitions:
+        field["is_identity_critical"] = is_identity_critical(field["header"])
+
     grouped = []
     for section_name, _ in FORM_GROUPS:
         grouped.append({
@@ -836,6 +956,13 @@ def render_guest_form(mode, cccd="", record=None, values=None, errors=None):
                 values[cccd_field_name] = cccd
         else:
             values = {}
+
+    if record and cccd:
+        if pending_request is None:
+            pending_request = get_pending_request_by_cccd(cccd)
+        if latest_request is None:
+            latest_request = get_latest_request_by_cccd(cccd)
+
     return render_template_string(
         GUEST_PAGE,
         mode=mode,
@@ -847,6 +974,8 @@ def render_guest_form(mode, cccd="", record=None, values=None, errors=None):
         signature=signature_token(state["signature"]),
         csrf=csrf_token(),
         cccd_field_name=cccd_field_name,
+        pending_request=pending_request,
+        latest_request=latest_request,
     )
 
 
@@ -874,6 +1003,9 @@ AUDIT_LOG_PAGE = r"""
     .badge.delete { background: #fdecec; color: #8f2f2f; }
     .badge.restore { background: #e3f2fd; color: #0d47a1; }
     .badge.export { background: #f3e5f5; color: #6a1b9a; }
+    .badge.request_update { background: #e0f2fe; color: #0369a1; }
+    .badge.approve_update { background: #dcfce7; color: #15803d; }
+    .badge.reject_update { background: #fee2e2; color: #b91c1c; }
     .change-list { font-size: 13px; color: #444; margin: 4px 0 0; padding: 0; list-style: none; }
     .change-list li { margin: 2px 0; }
     .change-list .field { font-weight: 600; color: #163d68; }
@@ -909,6 +1041,7 @@ AUDIT_LOG_PAGE = r"""
   <p class="muted">{% if stt %}Lịch sử thao tác cho riêng hồ sơ STT {{ stt }}{% else %}Lịch sử thao tác tạo, sửa, xóa hồ sơ thanh niên{% endif %}</p>
   <div class="actions">
     {% if current_user and current_user.is_admin %}
+      <a class="button secondary" href="{{ url_for('admin_approvals_queue') }}">Hàng đợi duyệt</a>
       <a class="button secondary" href="{{ url_for('admin_dashboard') }}">← Quản trị người dùng</a>
     {% endif %}
     <a class="button secondary" href="{{ url_for('index') }}">← Danh sách hồ sơ</a>
@@ -988,6 +1121,9 @@ AUDIT_LOG_PAGE = r"""
               {% elif entry.action == 'delete' %}<span class="badge delete">Xóa mềm</span>
               {% elif entry.action == 'restore' %}<span class="badge restore">Khôi phục</span>
               {% elif entry.action == 'export' %}<span class="badge export">Xuất file</span>
+              {% elif entry.action == 'request_update' %}<span class="badge request_update">Yêu cầu sửa</span>
+              {% elif entry.action == 'approve_update' %}<span class="badge approve_update">Duyệt yêu cầu</span>
+              {% elif entry.action == 'reject_update' %}<span class="badge reject_update">Từ chối yêu cầu</span>
               {% else %}<span class="badge">{{ entry.action }}</span>{% endif %}
             </td>
             <td>{{ entry.stt }}</td>
@@ -1007,6 +1143,11 @@ AUDIT_LOG_PAGE = r"""
                 </ul>
               {% elif entry.details and entry.details.reason is defined %}
                 <span class="muted">{{ entry.details.reason }}</span>
+              {% endif %}
+              {% if entry.details and entry.details.admin_note %}
+                <div style="margin-top: 4px; font-size: 13px; color: #163d68;"><strong>Ghi chú:</strong> {{ entry.details.admin_note }}</div>
+              {% elif entry.details and entry.details.rejection_reason %}
+                <div style="margin-top: 4px; font-size: 13px; color: #8f2f2f;"><strong>Lý do từ chối:</strong> {{ entry.details.rejection_reason }}</div>
               {% endif %}
             </td>
           </tr>
