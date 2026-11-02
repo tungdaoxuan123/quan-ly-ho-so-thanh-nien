@@ -862,22 +862,46 @@ AUDIT_LOG_PAGE = r"""
     body { max-width: 1240px; margin: 0 auto; padding: 28px; } h1 { margin: 0 0 6px; color: #163d68; }
     .muted { color: #637089; } .status { font-size: 14px; color: #637089; }
     .card { background: #fff; border: 1px solid #dbe3ee; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 10px #1720330c; }
-    button, .button { font: inherit; background: #1e5b91; border: 0; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; padding: 10px 13px; border-radius: 7px; white-space: nowrap; }
+    button, .button { font: inherit; background: #1e5b91; border: 0; color: #fff; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center; padding: 10px 14px; border-radius: 7px; white-space: nowrap; font-size: 14px; box-sizing: border-box; }
     .button.secondary { color: #1e5b91; background: #e9f1f8; }
+    .button.active { background: #163d68; font-weight: 600; cursor: default; }
+    .button.disabled { opacity: 0.45; pointer-events: none; }
     .table-wrap { overflow-x: auto; } table { width: 100%; min-width: 700px; border-collapse: collapse; } th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e4e9f0; vertical-align: top; font-size: 14px; }
     th { color: #344a66; background: #eef3f8; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
     .badge.create { background: #e0f7e9; color: #1a7f37; }
     .badge.update { background: #fff3cd; color: #856404; }
     .badge.delete { background: #fdecec; color: #8f2f2f; }
+    .badge.restore { background: #e3f2fd; color: #0d47a1; }
+    .badge.export { background: #f3e5f5; color: #6a1b9a; }
     .change-list { font-size: 13px; color: #444; margin: 4px 0 0; padding: 0; list-style: none; }
     .change-list li { margin: 2px 0; }
     .change-list .field { font-weight: 600; color: #163d68; }
     .change-list .old { color: #8f2f2f; text-decoration: line-through; }
     .change-list .new { color: #1a7f37; }
-    .pagination { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+    .pagination { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; align-items: center; }
+    .pagination .page-info { margin-left: auto; font-size: 13px; color: #637089; }
+    .page-ellipsis { padding: 8px 4px; color: #8898aa; font-weight: bold; }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
-    @media (max-width: 700px) { body { padding: 14px; } }
+
+    /* Search & Filters UI */
+    .filter-card { padding: 18px 20px; }
+    .search-row { display: flex; gap: 10px; margin-bottom: 14px; }
+    .search-input-wrap { flex: 1; position: relative; }
+    .search-input-wrap input { width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 10px 12px; border: 1px solid #ccd6e3; border-radius: 7px; background: #fff; }
+    .search-input-wrap input:focus { outline: none; border-color: #1e5b91; box-shadow: 0 0 0 2px #1e5b9122; }
+    .filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-group label { font-size: 13px; font-weight: 600; color: #344a66; }
+    .filter-group input, .filter-group select { font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid #ccd6e3; border-radius: 6px; background: #fff; color: #172033; box-sizing: border-box; width: 100%; }
+    .filter-group input:focus, .filter-group select:focus { outline: none; border-color: #1e5b91; box-shadow: 0 0 0 2px #1e5b9122; }
+    .filter-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e4e9f0; }
+
+    @media (max-width: 700px) {
+      body { padding: 14px; }
+      .search-row { flex-direction: column; }
+      .pagination .page-info { width: 100%; margin-left: 0; text-align: center; }
+    }
   </style>
 </head>
 <body>
@@ -888,10 +912,66 @@ AUDIT_LOG_PAGE = r"""
       <a class="button secondary" href="{{ url_for('admin_dashboard') }}">← Quản trị người dùng</a>
     {% endif %}
     <a class="button secondary" href="{{ url_for('index') }}">← Danh sách hồ sơ</a>
-    {% if stt %}
-      <a class="button secondary" href="{{ url_for('admin_audit_log') }}">Xem toàn bộ nhật ký</a>
+    {% if stt or has_filters %}
+      <a class="button secondary" href="{{ reset_url }}">Xem toàn bộ nhật ký</a>
     {% endif %}
   </div>
+
+  <div class="card filter-card">
+    <form method="get" action="{{ request.path }}">
+      <!-- Tìm kiếm: Người thực hiện, STT, Họ tên -->
+      <div class="search-row">
+        <div class="search-input-wrap">
+          <input type="text" name="q" value="{{ q }}" placeholder="🔍 Tìm kiếm theo Người thực hiện, STT, Họ tên..." aria-label="Tìm kiếm Người thực hiện, STT, Họ tên">
+        </div>
+        <button type="submit" class="button">Tìm kiếm</button>
+      </div>
+
+      <!-- Bộ lọc: Thời gian, Người thực hiện, Hành động -->
+      <div class="filter-grid">
+        <div class="filter-group">
+          <label for="filter-date-from">Thời gian từ:</label>
+          <input type="date" id="filter-date-from" name="date_from" value="{{ date_from }}">
+        </div>
+        <div class="filter-group">
+          <label for="filter-date-to">Thời gian đến:</label>
+          <input type="date" id="filter-date-to" name="date_to" value="{{ date_to }}">
+        </div>
+        <div class="filter-group">
+          <label for="filter-user">Người thực hiện:</label>
+          <select id="filter-user" name="username">
+            <option value="">Tất cả người thực hiện</option>
+            {% for u in performers %}
+            <option value="{{ u }}" {% if username == u %}selected{% endif %}>{{ u }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-action">Hành động:</label>
+          <select id="filter-action" name="action">
+            <option value="">Tất cả hành động</option>
+            <option value="create" {% if action == 'create' %}selected{% endif %}>Tạo mới</option>
+            <option value="update" {% if action == 'update' %}selected{% endif %}>Cập nhật</option>
+            <option value="delete" {% if action == 'delete' %}selected{% endif %}>Xóa mềm</option>
+            <option value="restore" {% if action == 'restore' %}selected{% endif %}>Khôi phục</option>
+            <option value="export" {% if action == 'export' %}selected{% endif %}>Xuất file</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-stt">STT hồ sơ:</label>
+          <input type="text" id="filter-stt" name="stt" value="{{ stt }}" placeholder="Lọc theo STT...">
+        </div>
+      </div>
+
+      <div class="filter-actions">
+        <button type="submit" class="button">Áp dụng bộ lọc</button>
+        {% if has_filters %}
+        <a class="button secondary" href="{{ reset_url }}">Xóa bộ lọc</a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+
   <p class="status">Tổng cộng {{ total }} lượt thao tác{% if stt %} cho hồ sơ STT {{ stt }}{% endif %}</p>
   <div class="card">
     <div class="table-wrap">
@@ -906,8 +986,8 @@ AUDIT_LOG_PAGE = r"""
               {% if entry.action == 'create' %}<span class="badge create">Tạo mới</span>
               {% elif entry.action == 'update' %}<span class="badge update">Cập nhật</span>
               {% elif entry.action == 'delete' %}<span class="badge delete">Xóa mềm</span>
-               {% elif entry.action == 'restore' %}<span class="badge">Khôi phục</span>
-               {% elif entry.action == 'export' %}<span class="badge">Xuất file</span>
+              {% elif entry.action == 'restore' %}<span class="badge restore">Khôi phục</span>
+              {% elif entry.action == 'export' %}<span class="badge export">Xuất file</span>
               {% else %}<span class="badge">{{ entry.action }}</span>{% endif %}
             </td>
             <td>{{ entry.stt }}</td>
@@ -938,9 +1018,27 @@ AUDIT_LOG_PAGE = r"""
     </div>
     {% if pages > 1 %}
     <nav class="pagination">
-      {% for p in range(1, pages + 1) %}
-      <a class="button {{ 'secondary' if p != page else '' }}" href="{{ url_for('admin_audit_log', page=p, stt=stt) if stt else url_for('admin_audit_log', page=p) }}">{{ p }}</a>
+      {% if page > 1 %}
+      <a class="button secondary" href="{{ audit_page_url(page - 1) }}">← Trước</a>
+      {% else %}
+      <span class="button secondary disabled">← Trước</span>
+      {% endif %}
+
+      {% for p in page_range %}
+        {% if p == '...' %}
+        <span class="page-ellipsis">…</span>
+        {% else %}
+        <a class="button {{ 'secondary' if p != page else '' }}" href="{{ audit_page_url(p) }}">{{ p }}</a>
+        {% endif %}
       {% endfor %}
+
+      {% if page < pages %}
+      <a class="button secondary" href="{{ audit_page_url(page + 1) }}">Sau →</a>
+      {% else %}
+      <span class="button secondary disabled">Sau →</span>
+      {% endif %}
+
+      <span class="page-info">Trang {{ page }} / {{ pages }} (Tối đa 50 dòng/trang)</span>
     </nav>
     {% endif %}
   </div>

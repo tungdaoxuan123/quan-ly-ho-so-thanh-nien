@@ -1368,25 +1368,82 @@ def lan_address():
         probe.close()
 
 
+@app.get("/audit-log")
 @app.get("/admin/audit-log")
 @auth_required(role="admin")
 def admin_audit_log():
-    from quan_ly_ho_so.audit import get_audit_logs
+    from quan_ly_ho_so.audit import get_audit_logs, get_audit_performers
+    import urllib.parse
+
     try:
         page = max(1, int(request.args.get("page", "1")))
     except ValueError:
         page = 1
-    stt = request.args.get("stt", "").strip() or None
+
+    q = (request.args.get("q") or request.args.get("search") or request.args.get("query") or "").strip()
+    stt = (request.args.get("stt") or "").strip() or None
+    username = (request.args.get("username") or request.args.get("user") or request.args.get("nguoi_thuc_hien") or "").strip() or None
+    action = (request.args.get("action") or request.args.get("hanh_dong") or "").strip() or None
+    date_from = (request.args.get("date_from") or request.args.get("from_date") or request.args.get("tu_ngay") or "").strip() or None
+    date_to = (request.args.get("date_to") or request.args.get("to_date") or request.args.get("den_ngay") or "").strip() or None
+    record_name = (request.args.get("record_name") or request.args.get("ho_ten") or request.args.get("name") or "").strip() or None
+
     per_page = 50
-    entries, total = get_audit_logs(limit=per_page, offset=(page - 1) * per_page, stt=stt)
+    entries, total = get_audit_logs(
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        stt=stt,
+        username=username,
+        action=action,
+        date_from=date_from,
+        date_to=date_to,
+        query=q or None,
+        record_name=record_name,
+    )
     pages = max(1, (total + per_page - 1) // per_page)
+    performers = get_audit_performers()
+
+    has_filters = bool(q or stt or username or action or date_from or date_to or record_name)
+
+    def audit_page_url(target_page: int) -> str:
+        params = dict(request.args)
+        params["page"] = str(target_page)
+        cleaned = {k: v for k, v in params.items() if v}
+        return f"{request.path}?{urllib.parse.urlencode(cleaned)}"
+
+    if pages <= 9:
+        page_range = list(range(1, pages + 1))
+    else:
+        raw_range = sorted({1, 2, pages - 1, pages, max(1, page - 1), page, min(pages, page + 1)})
+        page_range = []
+        prev = 0
+        for p in raw_range:
+            if prev and p - prev == 2:
+                page_range.append(prev + 1)
+            elif prev and p - prev > 2:
+                page_range.append("...")
+            page_range.append(p)
+            prev = p
+
     return render_template_string(
         AUDIT_LOG_PAGE,
         entries=entries,
         total=total,
         page=page,
         pages=pages,
-        stt=stt,
+        page_range=page_range,
+        per_page=per_page,
+        stt=stt or "",
+        q=q,
+        username=username or "",
+        action=action or "",
+        date_from=date_from or "",
+        date_to=date_to or "",
+        record_name=record_name or "",
+        performers=performers,
+        has_filters=has_filters,
+        audit_page_url=audit_page_url,
+        reset_url=request.path,
         csrf=csrf_token(),
         current_user=current_user(),
     )
