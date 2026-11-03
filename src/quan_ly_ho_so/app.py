@@ -1497,8 +1497,8 @@ def guest_update_request():
             cccd=cccd,
             stt=str(record["stt"]),
             record_name=record_name,
-            submitted_values=raw_values,
-            original_values=old_values,
+            submitted_values={labels_by_name[name]: value for name, value in raw_values.items()},
+            original_values={labels_by_name[name]: value for name, value in old_values.items()},
             changes=changes,
         )
         flash("Yêu cầu cập nhật thông tin đã được gửi thành công đến Quản trị viên để xét duyệt.", "success")

@@ -1,8 +1,9 @@
 import re
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 import quan_ly_ho_so.app as app
 from quan_ly_ho_so.approvals import (
@@ -11,12 +12,13 @@ from quan_ly_ho_so.approvals import (
     count_pending_requests,
     get_latest_request_by_cccd,
     get_pending_request_by_cccd,
+    get_request_by_id,
     has_pending_request,
     is_identity_critical,
     list_requests,
     reject_request,
 )
-from quan_ly_ho_so.audit import get_audit_logs
+from quan_ly_ho_so.audit import _audit_database_path, get_audit_logs
 from quan_ly_ho_so.auth import create_user, set_auth_database_path
 from quan_ly_ho_so.workbook.cache import find_record_by_citizen_id
 
@@ -82,6 +84,161 @@ class ProfileApprovalsWorkflowTests(unittest.TestCase):
     def get_csrf(self, html_text):
         match = re.search(r'name="csrf_token" value="([^"]+)"', html_text)
         return match.group(1) if match else ""
+
+    def submit_update(self, **changes):
+        response = self.client.get("/tra-cuu")
+        data = {
+            "csrf_token": self.get_csrf(response.get_data(as_text=True)),
+            "cccd": "001205000001",
+        }
+        for header, value in changes.items():
+            data[f"column_{app.state['headers'][header]}"] = value
+        self.client.post("/tra-cuu/cap-nhat", data=data)
+        request = get_pending_request_by_cccd(data["cccd"])
+        self.assertIsNotNone(request)
+        return request
+
+    def test_approval_preserves_unrelated_newer_edits_and_identity_cell_types(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        # Excel changed after submission; approval must refresh without needing a page visit.
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.cell(3, app.state["headers"]["Thường trú"]).value = "Địa chỉ quản trị vừa sửa"
+        workbook.save(self.workbook_path)
+        workbook.close()
+
+        approve_request(pending["id"], reviewer="admin")
+
+        record = find_record_by_citizen_id("001205000001")
+        self.assertEqual(record["data"]["Nghề nghiệp"], "Bác sĩ")
+        self.assertEqual(record["data"]["Thường trú"], "Địa chỉ quản trị vừa sửa")
+        workbook = load_workbook(self.workbook_path)
+        try:
+            self.assertEqual(workbook.active.cell(3, app.state["headers"]["Năm sinh"]).value, 2005)
+        finally:
+            workbook.close()
+
+    def test_approval_rejects_conflicting_edits_without_writing_any_fields(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ", "Thường trú": "Địa chỉ đề xuất"})
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.cell(3, app.state["headers"]["Nghề nghiệp"]).value = "Quản trị đã sửa"
+        workbook.save(self.workbook_path)
+        workbook.close()
+        before = self.workbook_path.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "Nghề nghiệp"):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(self.workbook_path.read_bytes(), before)
+        self.assertEqual(get_request_by_id(pending["id"])["status"], "pending")
+        self.assertEqual(get_audit_logs(action="approve_update")[1], 0)
+
+    def test_approval_does_not_fall_back_to_reused_stt(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.cell(3, app.state["headers"]["Căn cước"]).value = "001205999999"
+        workbook.active.cell(3, app.state["headers"]["TÊN THƯỜNG DÙNG"]).value = "NGƯỜI KHÁC"
+        workbook.save(self.workbook_path)
+        workbook.close()
+        before = self.workbook_path.read_bytes()
+
+        with self.assertRaises(ValueError):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(self.workbook_path.read_bytes(), before)
+        self.assertEqual(get_request_by_id(pending["id"])["status"], "pending")
+
+    def test_approval_follows_cccd_after_stt_is_renumbered(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.cell(3, app.state["headers"]["STT"]).value = 42
+        workbook.save(self.workbook_path)
+        workbook.close()
+
+        approve_request(pending["id"], reviewer="admin")
+
+        record = find_record_by_citizen_id("001205000001")
+        self.assertEqual(record["stt"], "42")
+        self.assertEqual(record["data"]["Nghề nghiệp"], "Bác sĩ")
+
+    def test_request_cannot_be_approved_against_another_workbook(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        other_path = Path(self.temp_dir.name) / "other.xlsx"
+        create_sample_workbook(other_path)  # Same CCCD, different source workbook.
+        app.set_workbook(other_path, persist=False)
+        before = other_path.read_bytes()
+
+        with self.assertRaises(ValueError):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(other_path.read_bytes(), before)
+        self.assertFalse(has_pending_request("001205000001"))
+        self.assertIsNone(get_latest_request_by_cccd("001205000001"))
+        self.assertEqual(get_request_by_id(pending["id"])["status"], "pending")
+        app.set_workbook(self.workbook_path, persist=False)
+        self.assertTrue(has_pending_request("001205000001"))
+
+    def test_approval_rejects_a_different_source_sheet(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.title = "Trang khác"
+        workbook.save(self.workbook_path)
+        workbook.close()
+        before = self.workbook_path.read_bytes()
+
+        with self.assertRaises(ValueError):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(self.workbook_path.read_bytes(), before)
+        self.assertEqual(get_request_by_id(pending["id"])["status"], "pending")
+
+    def test_approval_matches_headers_after_columns_are_reordered(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        old_address = find_record_by_citizen_id("001205000001")["data"]["Thường trú"]
+        occupation, address = (app.state["headers"][header] for header in ("Nghề nghiệp", "Thường trú"))
+        workbook = load_workbook(self.workbook_path)
+        sheet = workbook.active
+        for row in range(1, sheet.max_row + 1):
+            first, second = sheet.cell(row, occupation), sheet.cell(row, address)
+            first.value, second.value = second.value, first.value
+        workbook.save(self.workbook_path)
+        workbook.close()
+
+        approve_request(pending["id"], reviewer="admin")
+
+        record = find_record_by_citizen_id("001205000001")
+        self.assertEqual(record["data"]["Nghề nghiệp"], "Bác sĩ")
+        self.assertEqual(record["data"]["Thường trú"], old_address)
+
+    def test_approval_rejects_a_missing_changed_header(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ", "Thường trú": "Địa chỉ đề xuất"})
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.delete_cols(app.state["headers"]["Nghề nghiệp"])
+        workbook.save(self.workbook_path)
+        workbook.close()
+        before = self.workbook_path.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "Nghề nghiệp"):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(self.workbook_path.read_bytes(), before)
+        self.assertEqual(get_request_by_id(pending["id"])["status"], "pending")
+
+    def test_legacy_requests_without_a_source_remain_rejectable_but_cannot_be_applied(self):
+        pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
+        # Simulate the schema used before requests recorded their source.
+        with sqlite3.connect(_audit_database_path()) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(profile_edit_requests)")}
+            for column in ("workbook", "sheet"):
+                if column in columns:
+                    connection.execute(f"ALTER TABLE profile_edit_requests DROP COLUMN {column}")
+        before = self.workbook_path.read_bytes()
+
+        with self.assertRaises(ValueError):
+            approve_request(pending["id"], reviewer="admin")
+
+        self.assertEqual(self.workbook_path.read_bytes(), before)
+        rejected = reject_request(pending["id"], reviewer="admin", rejection_reason="Vui lòng gửi lại")
+        self.assertEqual(rejected["status"], "rejected")
 
     def test_identity_critical_fields_definition(self):
         """Verify the definition of identity-critical fields."""
@@ -190,8 +347,8 @@ class ProfileApprovalsWorkflowTests(unittest.TestCase):
         self.assertIn("Nghề nghiệp", change_fields)
 
         # The submitted data stored in the request must retain the original identity values
-        self.assertEqual(pending["submitted_data"][f"column_{name_col}"], "NGUYỄN VĂN AN")
-        self.assertEqual(str(pending["submitted_data"][f"column_{dob_col}"]), "2005")
+        self.assertEqual(pending["submitted_data"]["TÊN THƯỜNG DÙNG"], "NGUYỄN VĂN AN")
+        self.assertEqual(str(pending["submitted_data"]["Năm sinh"]), "2005")
 
     def test_temporary_lockout_spam_prevention(self):
         """Once an update request is submitted, user is temporarily locked from submitting further updates."""
@@ -214,7 +371,7 @@ class ProfileApprovalsWorkflowTests(unittest.TestCase):
         lookup2 = self.client.post("/tra-cuu", data={"csrf_token": csrf, "cccd": "001205000001"})
         html2 = lookup2.get_data(as_text=True)
         self.assertIn("Yêu cầu chỉnh sửa đang chờ phê duyệt", html2)
-        self.assertIn("chức năng gửi chỉnh sửa tạm thời bị khóa", html2)
+        self.assertIn("chức năng gửi chỉnh sửa tạm thời bị khóa", html2.casefold())
         self.assertIn("Sinh viên Y", html2)
 
         # Attempting second submission while locked is strictly prevented

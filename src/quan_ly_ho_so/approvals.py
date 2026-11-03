@@ -17,7 +17,8 @@ from quan_ly_ho_so.forms.fields import (
 )
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.workbook.manager import refresh_state
-from quan_ly_ho_so.workbook.cache import find_record, find_record_by_citizen_id, signature_token
+from quan_ly_ho_so.utils.text import display_value
+from quan_ly_ho_so.workbook.cache import find_record_by_citizen_id, signature_token
 from quan_ly_ho_so.workbook.writer import save_person
 
 # Identity-critical fields that users are strictly prohibited from editing on /tra-cuu
@@ -36,6 +37,11 @@ def is_identity_critical(header: str) -> bool:
     return header.strip() in IDENTITY_CRITICAL_HEADERS
 
 
+def _request_source() -> Tuple[str, str]:
+    workbook = state["workbook"]
+    return (str(Path(workbook).resolve()) if workbook else "", state["sheet"] or "")
+
+
 def _approvals_connection() -> sqlite3.Connection:
     """Open or create connection to the approvals & audit SQLite database."""
     path = _audit_database_path()
@@ -47,6 +53,8 @@ def _approvals_connection() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS profile_edit_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cccd TEXT NOT NULL,
+            workbook TEXT NOT NULL DEFAULT '',
+            sheet TEXT NOT NULL DEFAULT '',
             stt TEXT NOT NULL DEFAULT '',
             record_name TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'pending',
@@ -60,6 +68,12 @@ def _approvals_connection() -> sqlite3.Connection:
         )
         """
     )
+    # Old requests have no trustworthy source. Keep their history, but never infer a
+    # workbook from whichever file happens to be open when the upgrade runs.
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(profile_edit_requests)")}
+    for column in ("workbook", "sheet"):
+        if column not in columns:
+            connection.execute(f"ALTER TABLE profile_edit_requests ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_requests_cccd_status ON profile_edit_requests(cccd, status)"
     )
@@ -91,8 +105,8 @@ def has_pending_request(cccd: str) -> bool:
     connection = _approvals_connection()
     try:
         row = connection.execute(
-            "SELECT COUNT(*) FROM profile_edit_requests WHERE cccd = ? AND status = 'pending'",
-            (clean_cccd,),
+            "SELECT COUNT(*) FROM profile_edit_requests WHERE cccd = ? AND workbook = ? AND sheet = ? AND status = 'pending'",
+            (clean_cccd, *_request_source()),
         ).fetchone()
         return bool(row and row[0] > 0)
     finally:
@@ -107,8 +121,8 @@ def get_pending_request_by_cccd(cccd: str) -> Optional[Dict[str, Any]]:
     connection = _approvals_connection()
     try:
         row = connection.execute(
-            "SELECT * FROM profile_edit_requests WHERE cccd = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
-            (clean_cccd,),
+            "SELECT * FROM profile_edit_requests WHERE cccd = ? AND workbook = ? AND sheet = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+            (clean_cccd, *_request_source()),
         ).fetchone()
         return _row_to_request(row) if row else None
     finally:
@@ -123,8 +137,8 @@ def get_latest_request_by_cccd(cccd: str) -> Optional[Dict[str, Any]]:
     connection = _approvals_connection()
     try:
         row = connection.execute(
-            "SELECT * FROM profile_edit_requests WHERE cccd = ? ORDER BY id DESC LIMIT 1",
-            (clean_cccd,),
+            "SELECT * FROM profile_edit_requests WHERE cccd = ? AND workbook = ? AND sheet = ? ORDER BY id DESC LIMIT 1",
+            (clean_cccd, *_request_source()),
         ).fetchone()
         return _row_to_request(row) if row else None
     finally:
@@ -203,13 +217,16 @@ def create_profile_edit_request(
     original_values: Dict[str, str],
     changes: List[Dict[str, str]],
 ) -> int:
-    """Store a pending update request and emit the initial lifecycle audit log.
+    """Store a pending request with snapshots keyed by header, bound to its source.
     
     Returns the created request ID.
     """
     clean_cccd = cccd.strip()
     clean_stt = str(stt).strip()
     clean_name = record_name.strip()
+    workbook, sheet = _request_source()
+    if not workbook or not sheet:
+        raise ValueError("Hãy mở tệp Excel trước khi gửi yêu cầu cập nhật.")
     now = datetime.now().isoformat()
 
     connection = _approvals_connection()
@@ -217,11 +234,13 @@ def create_profile_edit_request(
         cursor = connection.execute(
             """
             INSERT INTO profile_edit_requests (
-                cccd, stt, record_name, status, submitted_at, submitted_data, original_data, changes
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+                cccd, workbook, sheet, stt, record_name, status, submitted_at, submitted_data, original_data, changes
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
             (
                 clean_cccd,
+                workbook,
+                sheet,
                 clean_stt,
                 clean_name,
                 now,
@@ -244,6 +263,8 @@ def create_profile_edit_request(
         details={
             "request_id": req_id,
             "cccd": clean_cccd,
+            "workbook": workbook,
+            "sheet": sheet,
             "lifecycle": "submitted",
             "submitted_at": now,
             "changes": changes,
@@ -265,34 +286,37 @@ def approve_request(
     if req["status"] != "pending":
         raise ValueError("Yêu cầu này đã được xử lý trước đó.")
 
+    source = (req["workbook"], req["sheet"])
+    if not all(source):
+        raise ValueError("Yêu cầu cũ chưa ghi nhận tệp Excel gốc. Hãy từ chối yêu cầu và đề nghị gửi lại.")
+    if _request_source() != source:
+        raise ValueError("Hãy mở đúng tệp Excel và trang tính gốc của yêu cầu trước khi phê duyệt.")
+    refresh_state()
+    if state["error"]:
+        raise ValueError(state["error"])
+    if _request_source() != source:
+        raise ValueError("Trang tính gốc của yêu cầu đã thay đổi. Không thể phê duyệt.")
+
     cccd = req["cccd"]
     record = find_record_by_citizen_id(cccd)
-    if record is None and req.get("stt"):
-        record = find_record(req["stt"])
     if record is None:
         raise ValueError("Không tìm thấy hồ sơ tương ứng trong tệp Excel hiện tại.")
 
-    # Prepare column updates
-    definitions = field_definitions()
-    headers_by_column = {d["column"]: d["header"] for d in definitions}
-    columns_by_name = {d["name"]: d["column"] for d in definitions}
-
-    submitted_by_name = req["submitted_data"]
-    submitted_by_col = {}
-    for name, val in submitted_by_name.items():
-        if name in columns_by_name:
-            submitted_by_col[columns_by_name[name]] = val
-
-    # Strictly prohibit user changes to identity-critical fields: retain record's original values
+    # Apply exactly the displayed diff, resolving headers against the refreshed workbook.
+    # Column numbers in an old form are not stable when Excel columns are rearranged.
+    columns_by_header = {d["header"]: d["column"] for d in field_definitions()}
     updates = {}
-    for col, header in headers_by_column.items():
+    for change in req["changes"]:
+        header = change["field"]
         if header in IDENTITY_CRITICAL_HEADERS:
-            updates[col] = record["data"].get(header)
-        else:
-            if col in submitted_by_col:
-                updates[col] = coerce_cell_value(header, str(submitted_by_col[col]))
-            else:
-                updates[col] = record["data"].get(header)
+            raise ValueError(f"Không được thay đổi trường định danh: {header}.")
+        if header not in columns_by_header:
+            raise ValueError(f"Tệp Excel không còn cột {header}. Không thể phê duyệt yêu cầu này.")
+        if display_value(record["data"].get(header)).strip() != display_value(change["from"]).strip():
+            raise ValueError(f"Thông tin {header} đã thay đổi sau khi gửi yêu cầu. Hãy từ chối và đề nghị gửi lại.")
+        updates[columns_by_header[header]] = coerce_cell_value(header, display_value(change["to"]))
+    if not updates:
+        raise ValueError("Yêu cầu không có thay đổi nào để phê duyệt.")
 
     # Save to Excel workbook atomically
     row, stt, backup = save_person(
