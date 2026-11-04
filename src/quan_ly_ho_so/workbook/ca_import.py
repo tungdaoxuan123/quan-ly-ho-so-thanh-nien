@@ -1,4 +1,8 @@
-"""Read the Ministry of Public Security's per-khu-phố lists and turn their new people into workbook rows."""
+"""Read the Ministry of Public Security's lists and turn their people into workbook rows.
+
+Two layouts are read: the per-khu-phố lists (several lines per cell, a "Khu phố mới" column) and the flat
+ward list (one value per column, khu phố only inside the address).
+"""
 
 import io
 import re
@@ -23,6 +27,21 @@ FAMILY_HEADERS = (
     ("Tên mẹ", "Năm sinh mẹ", "Nghề nghiệp mẹ"),
     ("Tên vợ", "năm sinh vợ", "nghề nghiệp vợ"),
 )
+# Free-text columns: on an update the CA text goes below what we hold, never replacing it (health notes, phone numbers).
+APPENDED = {NOTE_HEADER, OTHER_INFO}
+
+# Flat ward list: folded header -> what the column holds.
+FLAT_HEADERS = {
+    "ho va ten": "name",
+    "ngay thang nam sinh": "birth",
+    "cccd": "citizen_id",
+    "chu ho": "household_head",
+    "dia chi thuong tru": "permanent",
+    "dia chi tam tru": "temporary",
+    "ten cha": "father",
+    "ten me": "mother",
+    "ghi chu": "note",
+}
 
 
 def column_kind(header):
@@ -42,8 +61,8 @@ def lines_of(value):
 
 def normalized_citizen_id(value):
     digits = re.sub(r"\s+", "", display_value(value))
-    # A leading zero is lost when Excel keeps the number as a number.
-    return digits.zfill(12) if digits.isdigit() and len(digits) == 11 else digits
+    # Leading zeros are lost when Excel keeps the number as a number; province codes start at 001, so up to two.
+    return digits.zfill(12) if digits.isdigit() and len(digits) in (10, 11) else digits
 
 
 def _birth(lines, notes):
@@ -79,6 +98,27 @@ def _family(lines, values, notes):
         values[name_header], values[year_header], values[job_header] = name, year, lines[start + 1]
 
 
+def quarter_choice(number, notes):
+    """ "7" -> "Khu phố 7", or "" with a note when the ward has no such khu phố."""
+    if not number:
+        return ""
+    quarter = f"Khu phố {number}"
+    if quarter not in QUARTER_CHOICES:
+        notes.append(f"khu phố \"{number}\" không có trong danh sách, chưa gán khu phố")
+        return ""
+    return quarter
+
+
+def person_entry(name, citizen_id, quarter, values, notes):
+    return {
+        "name": name,
+        "citizen_id": citizen_id,
+        "quarter": quarter,
+        "values": {header: coerce_cell_value(header, str(value)) for header, value in values.items()},
+        "notes": notes,
+    }
+
+
 def parse_row(row, columns):
     """One list row -> {"name", "citizen_id", "quarter", "values", "notes"}, or None for a banner/blank row."""
     def cell(kind):
@@ -109,20 +149,48 @@ def parse_row(row, columns):
     _family(lines_of(cell(FAMILY)), values, notes)
     values[NOTE_HEADER] = "\n".join(lines_of(cell(NOTE)))
 
-    quarter = ""
-    raw_quarter = display_value(cell(QUARTER_NEW))
-    if raw_quarter:
-        quarter = f"Khu phố {raw_quarter}"
-        if quarter not in QUARTER_CHOICES:
-            notes.append(f"khu phố \"{raw_quarter}\" không có trong danh sách, chưa gán khu phố")
-            quarter = ""
-    return {
-        "name": name,
-        "citizen_id": citizen_id,
-        "quarter": quarter,
-        "values": {header: coerce_cell_value(header, str(value)) for header, value in values.items()},
-        "notes": notes,
-    }
+    quarter = quarter_choice(display_value(cell(QUARTER_NEW)), notes)
+    return person_entry(name, citizen_id, quarter, values, notes)
+
+
+def parse_flat_row(row, columns):
+    """One row of the flat ward list -> the same shape as parse_row, or None for a blank row."""
+    def cell(key):
+        index = columns.get(key)
+        return row[index] if index is not None and index < len(row) else None
+
+    def text(key):
+        return " ".join(display_value(cell(key)).split())
+
+    name = text("name")
+    if not name:
+        return None
+    notes = []
+    citizen_id = normalized_citizen_id(cell("citizen_id"))
+    if citizen_id and not re.fullmatch(r"\d{12}", citizen_id):
+        # Two numbers in one cell, or a number Excel already rounded ("2.52207e+16"): not safe to match on.
+        notes.append(f"CCCD không hợp lệ \"{display_value(cell('citizen_id'))}\"")
+        citizen_id = ""
+    # The list writes names in capitals; the workbook keeps "Tên khai sinh" and parents' names capitalised by word.
+    values = {"Tên khai sinh": name.title(), "TÊN THƯỜNG DÙNG": name.upper(), "Căn cước": citizen_id}
+    birth = cell("birth")
+    if hasattr(birth, "year"):
+        values["Ngày sinh"], values["Tháng sinh"], values["Năm sinh"] = birth.day, birth.month, birth.year
+    else:
+        values.update(_birth(["", text("birth")], notes)[1])
+    values["Thường trú"] = text("permanent")
+    values["Nơi ở hiện nay"] = text("temporary")
+    values["Tên cha"] = text("father").title()
+    values["Tên mẹ"] = text("mother").title()
+    values[NOTE_HEADER] = text("note")
+    household_head = text("household_head")
+    values[OTHER_INFO] = f"Chủ hộ: {household_head.title()}" if household_head else ""
+
+    numbers = re.findall(r"khu pho\s*(\d+)", fold(values["Thường trú"]))
+    if not numbers and values["Thường trú"]:
+        notes.append("không thấy khu phố trong địa chỉ thường trú, chưa gán khu phố")
+    quarter = quarter_choice(str(int(numbers[-1])) if numbers else "", notes)
+    return person_entry(name, citizen_id, quarter, values, notes)
 
 
 def read_ca_file(data):
@@ -141,6 +209,14 @@ def read_ca_file(data):
                 if CITIZEN_ID in columns and NAME_AND_BIRTH in columns:
                     people.extend(person for person in (parse_row(row, columns) for row in rows[header_index + 1:]) if person)
                     break
+                flat = {}
+                for index, header in enumerate(header_row):
+                    key = FLAT_HEADERS.get(" ".join(fold(normalized_header(header)).split())) if header is not None else None
+                    if key and key not in flat:
+                        flat[key] = index
+                if {"name", "birth", "citizen_id"} <= flat.keys():
+                    people.extend(person for person in (parse_flat_row(row, flat) for row in rows[header_index + 1:]) if person)
+                    break
     finally:
         workbook.close()
     return people
@@ -156,26 +232,64 @@ def read_ca_files(files):
             errors.append(f"{name}: không đọc được tệp ({error})")
             continue
         if not found:
-            errors.append(f"{name}: không thấy bảng danh sách có cột CCCD và họ tên khai sinh")
+            errors.append(f"{name}: không thấy bảng danh sách có cột CCCD và họ tên")
         for person in found:
             person["file"] = name
         people.extend(found)
     return people, errors
 
 
-def plan_import(people, known_citizen_ids):
-    """Sort people into those to add and those to leave alone, in the order they were read."""
-    plan = {"add": [], "existing": [], "no_citizen_id": [], "repeated": []}
+# Never rewritten on an update: the key itself and the running number.
+NEVER_UPDATED = {"STT", "Căn cước"}
+
+
+def changes_for(person, record):
+    """What this CA row would change in an existing record.
+
+    Only values the CA list actually has are written; a blank cell in the list never erases what we hold.
+    """
+    changes = []
+    for header, value in person["values"].items():
+        new = display_value(value)
+        if header in NEVER_UPDATED or not new:
+            continue
+        old = display_value(record["data"].get(header, ""))
+        if header in APPENDED:
+            if new in old:
+                continue
+            new = value = f"{old}\n{new}" if old else new
+        if old != new:
+            changes.append({"field": " ".join(header.split()), "header": header, "old": old, "new": new, "value": value})
+    if person["quarter"] and person["quarter"] != record["quarter"]:
+        changes.append({"field": "Khu phố", "header": None, "old": record["quarter"], "new": person["quarter"], "value": person["quarter"]})
+    return changes
+
+
+def plan_import(people, known):
+    """Sort people into add / update / unchanged / skipped, in the order they were read.
+
+    `known` maps CCCD -> the record we hold (a plain set of CCCDs also works, but then nothing can be updated).
+    """
+    plan = {"add": [], "update": [], "existing": [], "no_citizen_id": [], "repeated": []}
     seen = set()
     for person in people:
         citizen_id = person["citizen_id"]
         if not citizen_id:
             plan["no_citizen_id"].append(person)
-        elif citizen_id in known_citizen_ids:
-            plan["existing"].append(person)
         elif citizen_id in seen:
             plan["repeated"].append(person)
         else:
             seen.add(citizen_id)
-            plan["add"].append(person)
+            if citizen_id not in known:
+                plan["add"].append(person)
+                continue
+            record = known[citizen_id] if isinstance(known, dict) else None
+            changes = changes_for(person, record) if record else []
+            if record:
+                person["stt"], person["row"] = record["stt"], record["row"]
+            if changes:
+                person["changes"] = changes
+                plan["update"].append(person)
+            else:
+                plan["existing"].append(person)
     return plan

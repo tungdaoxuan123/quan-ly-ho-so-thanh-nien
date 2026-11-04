@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import getpass
 import os
 import secrets
 import socket
@@ -64,6 +65,7 @@ from quan_ly_ho_so.config import (
     DIEN_TEMPLATE_DIR,
     FILTER_DB_COLUMNS,
     FORM_GROUPS,
+    HTTPS_DIR,
     LIST_TEMPLATE,
     MAX_EXPORT_RECORDS,
     MAX_RECORDS_PER_PAGE,
@@ -86,7 +88,9 @@ from quan_ly_ho_so.forms.fields import (
     valid_citizen_id,
     validate_form_values,
 )
-from quan_ly_ho_so.security import csrf_token, is_local_network, valid_csrf
+from quan_ly_ho_so.security import client_ip, csrf_token, is_local_network, online_mode, valid_csrf
+from quan_ly_ho_so.throttle import Throttle
+from quan_ly_ho_so.tls import lan_certificate, lan_ssl_context
 from quan_ly_ho_so.state import state
 from quan_ly_ho_so.utils.text import display_value, fold
 from quan_ly_ho_so.web.templates import (
@@ -104,7 +108,8 @@ from quan_ly_ho_so.web.templates import (
 )
 from quan_ly_ho_so.word.export import build_document, combine_booklet, unique_output_path
 from quan_ly_ho_so.workbook.cache import (
-    all_citizen_ids,
+    active_people,
+    records_by_citizen_id,
     database_record_count,
     delete_record_file,
     find_record,
@@ -134,12 +139,22 @@ app.secret_key = get_persistent_secret_key()
 app.permanent_session_lifetime = timedelta(days=DEFAULT_SESSION_LIFETIME_DAYS)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+if online_mode():
+    # Published through an https tunnel: keep the session cookie off plain http.
+    app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE="Lax")
+
+# Guards against guessing passwords and mass-scraping or spamming the public guest pages.
+login_failures = Throttle(limit=5, window_seconds=15 * 60)
+guest_lookups = Throttle(limit=30, window_seconds=10 * 60)
+guest_saves = Throttle(limit=5, window_seconds=60 * 60)
+TOO_MANY_ATTEMPTS = "Bạn thao tác quá nhiều lần. Vui lòng thử lại sau ít phút."
 
 
 @app.before_request
 def guard_network():
-    """Keep the app on the local network: refuse anything that is not this computer or a private address."""
-    if not is_local_network(request.remote_addr):
+    """Keep the app on the local network: refuse anything that is not this computer or a private address.
+    Online mode publishes the app on purpose, so login, throttling and https cookies protect it instead."""
+    if not online_mode() and not is_local_network(request.remote_addr):
         abort(403)
 
 
@@ -158,7 +173,7 @@ def inject_user():
 
 @app.before_request
 def require_authentication():
-    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_start_create", "guest_save", "guest_update_request"}
+    exempt_endpoints = {"login", "login_post", "logout", "static", "guest_lookup", "guest_lookup_post", "guest_start_create", "guest_save", "guest_update_request", "https_ca_certificate"}
     if request.endpoint in exempt_endpoints or request.endpoint is None:
         return None
     user = current_user()
@@ -194,8 +209,13 @@ def login_post():
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     next_url = request.form.get("next", "")
+    attempt_key = (client_ip(), username.lower())
+    if login_failures.blocked(attempt_key):
+        flash(TOO_MANY_ATTEMPTS, "error")
+        return render_template_string(LOGIN_PAGE, csrf=csrf_token(), next_url=next_url, username=username), 429
     user = authenticate(username, password)
     if user is None:
+        login_failures.record(attempt_key)
         flash("Tên đăng nhập hoặc mật khẩu không chính xác.", "error")
         return render_template_string(
             LOGIN_PAGE,
@@ -203,6 +223,7 @@ def login_post():
             next_url=next_url,
             username=username,
         )
+    login_failures.clear(attempt_key)
     login_user(user)
     if user.get("must_change_password"):
         flash("Đây là lần đầu đăng nhập hoặc mật khẩu vừa được đặt lại. Vui lòng tự cài đặt mật khẩu mới.", "error")
@@ -519,7 +540,17 @@ def pending_ca_report():
     pending = state.get("import_pending")
     if pending is None:
         return None
-    return ca_report(pending, plan_import(pending["people"], all_citizen_ids()), preview=True)
+    report = ca_report(pending, plan_import(pending["people"], records_by_citizen_id()), preview=True)
+    # People already in the workbook that none of the chosen files lists (matched by CCCD).
+    listed = {person["citizen_id"] for person in pending["people"] if person["citizen_id"]}
+    missing = [
+        {**person, "file": "Excel tổng", "notes": [] if person["citizen_id"] else ["chưa có CCCD, không đối chiếu được"]}
+        for person in active_people()
+        if person["citizen_id"] not in listed
+    ]
+    report["groups"].append(("Có trong Excel tổng nhưng không có trong file CA", missing))
+    report["counts"]["missing"] = len(missing)
+    return report
 
 
 @app.get("/")
@@ -1070,9 +1101,11 @@ def ca_report(pending, plan, backup="", preview=False):
         "counts": {key: len(value) for key, value in plan.items()},
         "groups": [
             ("Sẽ được thêm mới vào Excel tổng" if preview else "Đã thêm mới vào Excel tổng", plan["add"]),
-            ("Đã có trong Excel tổng — giữ nguyên, không cập nhật", plan["existing"]),
+            ("Sẽ được cập nhật theo file CA (đã có trong Excel tổng)" if preview else "Đã cập nhật theo file CA", plan["update"]),
+            ("Đã có trong Excel tổng, dữ liệu không khác — giữ nguyên", plan["existing"]),
             ("Không có số CCCD — bỏ qua, hãy bổ sung CCCD rồi nhập lại", plan["no_citizen_id"]),
             ("Trùng CCCD ngay trong các tệp vừa chọn — chỉ lấy dòng đầu", plan["repeated"]),
+            ("Có thay đổi trong file CA nhưng không cập nhật — đã chọn chỉ thêm mới", plan.get("not_updated", [])),
         ],
     }
 
@@ -1115,13 +1148,29 @@ def import_ca_confirm():
         return redirect(url_for("index"))
     try:
         # Plan again: the workbook may have gained some of these people since the preview.
-        plan = plan_import(pending["people"], all_citizen_ids())
+        plan = plan_import(pending["people"], records_by_citizen_id())
+        if request.form.get("only_add"):
+            # "Chỉ thêm mới": people already held stay exactly as they are; the report still lists what differed.
+            plan["not_updated"], plan["update"] = plan["update"], []
         backup = None
-        if plan["add"]:
+        if plan["add"] or plan["update"]:
+            updates = [
+                (person["row"], person["citizen_id"], {c["header"]: c["value"] for c in person["changes"] if c["header"]})
+                for person in plan["update"]
+            ]
             stts, backup = append_people(
                 state["workbook"], state["sheet"], [person["values"] for person in plan["add"]],
-                signature_token(state["signature"]),
+                signature_token(state["signature"]), updates,
             )
+            for person in plan["update"]:
+                audit(
+                    "update", {"stt": person["stt"], "name": person["name"]},
+                    {"changes": [{"field": c["field"], "from": c["old"], "to": c["new"]} for c in person["changes"]],
+                     "reason": f"Cập nhật từ file CA ({person['file']})"},
+                )
+                for change in person["changes"]:
+                    if not change["header"]:
+                        set_record_attribute(state["workbook"], person["citizen_id"], "quarter", change["value"])
             for person, stt in zip(plan["add"], stts):
                 person["stt"] = stt
                 audit("create", {"stt": stt, "name": person["values"]["TÊN THƯỜNG DÙNG"]}, {"reason": f"Nhập từ file CA ({person['file']})"})
@@ -1312,6 +1361,15 @@ def download(filename):
     return send_from_directory(output_dir, filename, as_attachment=True)
 
 
+@app.get("/chung-chi")
+def https_ca_certificate():
+    """The LAN CA certificate, so a phone can install it once and stop showing the HTTPS warning."""
+    ca_path = HTTPS_DIR / "ca.pem"
+    if not ca_path.is_file():
+        abort(404)
+    return send_file(ca_path, mimetype="application/x-x509-ca-cert", as_attachment=True, download_name="QuanLyHoSo-CA.crt")
+
+
 @app.get("/tra-cuu")
 def guest_lookup():
     refresh_state()
@@ -1340,6 +1398,10 @@ def guest_lookup_post():
     if not valid_citizen_id(cccd):
         flash(CITIZEN_ID_ERROR, "error")
         return redirect(url_for("guest_lookup"))
+    if guest_lookups.blocked(client_ip()):
+        flash(TOO_MANY_ATTEMPTS, "error")
+        return redirect(url_for("guest_lookup"))
+    guest_lookups.record(client_ip())
     record = find_record_by_citizen_id(cccd)
     if record:
         return render_guest_form(mode="readonly", cccd=cccd, record=record)
@@ -1364,6 +1426,10 @@ def guest_start_create():
     if not valid_citizen_id(cccd):
         flash(CITIZEN_ID_ERROR, "error")
         return redirect(url_for("guest_lookup"))
+    if guest_lookups.blocked(client_ip()):
+        flash(TOO_MANY_ATTEMPTS, "error")
+        return redirect(url_for("guest_lookup"))
+    guest_lookups.record(client_ip())
     record = find_record_by_citizen_id(cccd)
     if record:
         return render_guest_form(mode="readonly", cccd=cccd, record=record)
@@ -1389,6 +1455,9 @@ def guest_save():
     if not valid_citizen_id(cccd):
         flash(CITIZEN_ID_ERROR, "error")
         return redirect(url_for("guest_lookup"))
+    if guest_saves.blocked(client_ip()):
+        flash(TOO_MANY_ATTEMPTS, "error")
+        return redirect(url_for("guest_lookup"))
     # Check if CCCD already exists (prevent duplicate)
     existing = find_record_by_citizen_id(cccd)
     if existing:
@@ -1409,6 +1478,7 @@ def guest_save():
             state["workbook"], state["sheet"], updates, request.form.get("signature", ""),
         )
         refresh_state(force=True)
+        guest_saves.record(client_ip())
         audit("create", find_record_by_citizen_id(cccd), {"reason": f"Khách tự nhập (CCCD {cccd})"})
         flash(f"Đã tạo hồ sơ thành công (STT {stt}). Cảm ơn bạn!", "success")
         # After saving, look up the new record and show it in readonly mode
@@ -1527,6 +1597,19 @@ def lan_address():
         probe.close()
 
 
+def lan_hostname():
+    """This computer's mDNS name (name.local). Unlike the LAN address it stays the same after reconnecting to the Wi-Fi."""
+    if sys.platform == "darwin":
+        # macOS keeps the Bonjour name apart from the hostname, which the network's DHCP may override.
+        try:
+            name = subprocess.run(["scutil", "--get", "LocalHostName"], capture_output=True, text=True, check=True).stdout.strip()
+            if name:
+                return f"{name}.local"
+        except (OSError, subprocess.CalledProcessError) as error:
+            logging.warning("Could not read the Bonjour name: %s", error)
+    return f"{socket.gethostname().split('.')[0]}.local"
+
+
 @app.get("/audit-log")
 @app.get("/admin/audit-log")
 @auth_required(role="admin")
@@ -1608,30 +1691,62 @@ def admin_audit_log():
     )
 
 
+def ensure_admin_password():
+    """Opened to the LAN or the internet, the admin must not keep the default password: ask for a new one here."""
+    admin = get_user_by_username(DEFAULT_ADMIN_USERNAME)
+    if not admin or not check_password_hash(admin["password_hash"], DEFAULT_ADMIN_PASSWORD):
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "Tài khoản quản trị vẫn dùng mật khẩu mặc định nên chưa thể mở cho người khác. "
+            "Hãy chạy lại trong cửa sổ dòng lệnh để đặt mật khẩu mới."
+        )
+    print(f"Tài khoản quản trị '{DEFAULT_ADMIN_USERNAME}' đang dùng mật khẩu mặc định. Hãy đặt mật khẩu mới (ít nhất 8 ký tự).")
+    while True:
+        new_password = getpass.getpass("Mật khẩu mới: ")
+        if len(new_password) < 8:
+            print("Mật khẩu phải có ít nhất 8 ký tự.")
+        elif new_password == DEFAULT_ADMIN_PASSWORD:
+            print("Không được dùng lại mật khẩu mặc định.")
+        elif new_password != getpass.getpass("Nhập lại mật khẩu: "):
+            print("Hai lần nhập không khớp.")
+        else:
+            break
+    update_user(admin["id"], password=new_password, must_change_password=False)
+    print("Đã đổi mật khẩu quản trị.")
+
+
 def main():
     if not TEMPLATE.is_file():
         raise SystemExit("Mau_Ho_So_Thanh_Nien.docx phải nằm cùng thư mục với ứng dụng.")
     auth_database_connection().close()
+    if "--setup" in sys.argv[1:]:
+        ensure_admin_password()
+        return
     # QLHS_HOST=0.0.0.0 opens the app to the local network; by default only this computer can reach it.
     host = os.environ.get("QLHS_HOST") or os.environ.get("FLASK_RUN_HOST", "127.0.0.1")
-    port = int(os.environ.get("FLASK_RUN_PORT", "8765"))
+    port = int(os.environ.get("FLASK_RUN_PORT", "3000"))
     debug = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true", "yes")
     open_browser = os.environ.get("OPEN_BROWSER", "1").lower() in ("1", "true", "yes")
     shared = host not in ("127.0.0.1", "localhost", "::1")
-    if shared:
-        admin = get_user_by_username(DEFAULT_ADMIN_USERNAME)
-        if admin and check_password_hash(admin["password_hash"], DEFAULT_ADMIN_PASSWORD):
-            raise SystemExit(
-                "Tài khoản quản trị vẫn dùng mật khẩu mặc định nên chưa thể mở cho mạng LAN. "
-                "Hãy chạy ứng dụng bình thường (chỉ máy này), đăng nhập quản trị và đổi mật khẩu trước."
-            )
+    if shared or online_mode():
+        ensure_admin_password()
     load_saved_workbook()
-    if shared:
-        logging.info("Máy khác trong mạng nội bộ vào bằng: http://%s:%d (cần tài khoản đăng nhập)", lan_address(), port)
+    # LAN mode serves https (Chrome on phones insists on it); online mode stays http because the tunnel adds https.
+    ssl_context = None
+    scheme = "http"
+    if shared and not online_mode():
+        address, hostname = lan_address(), lan_hostname()
+        ssl_context = lan_ssl_context(*lan_certificate(HTTPS_DIR, address, hostname))
+        scheme = "https"
+        app.config.update(SESSION_COOKIE_SECURE=True)
+        logging.info("Máy khác trong mạng nội bộ vào bằng: https://%s:%d (cần tài khoản đăng nhập)", hostname, port)
+        logging.info("Địa chỉ trên không đổi khi bật lại wifi. Nếu thiết bị không mở được thì dùng: https://%s:%d", address, port)
+        logging.info("Lần đầu trình duyệt báo 'không riêng tư': bấm Nâng cao -> Tiếp tục. Muốn hết cảnh báo, cài chứng chỉ tại https://%s:%d/chung-chi", hostname, port)
     if open_browser:
         local_host = "127.0.0.1" if shared else host
-        threading.Timer(0.7, lambda: webbrowser.open(f"http://{local_host}:{port}")).start()
-    app.run(host=host, port=port, debug=debug)
+        threading.Timer(0.7, lambda: webbrowser.open(f"{scheme}://{local_host}:{port}")).start()
+    app.run(host=host, port=port, debug=debug, ssl_context=ssl_context)
 
 
 

@@ -180,10 +180,11 @@ def build_dien_workbook(records, template_path):
             sheet.cell(row, column).value = None
         sheet.row_dimensions[row].height = None
 
+    width = sheet.max_column
     for offset, record in enumerate(records):
         row = first_data_row + offset
         if row != first_data_row:
-            copy_row_style(sheet, first_data_row, row)
+            copy_row_style(sheet, first_data_row, row, width)
         for column, (kind, header) in columns.items():
             sheet.cell(row, column).value = cell_content(kind, record, header, offset + 1)
 

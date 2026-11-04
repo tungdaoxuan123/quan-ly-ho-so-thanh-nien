@@ -37,6 +37,7 @@ dist/
 *.spec
 
 # Local secrets and operating-system files
+HTTPS/
 .env
 .env.*
 !.env.example

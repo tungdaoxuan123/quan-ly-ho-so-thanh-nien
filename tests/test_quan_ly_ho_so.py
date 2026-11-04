@@ -8,6 +8,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 import quan_ly_ho_so.app as app
+from quan_ly_ho_so.audit import get_audit_logs
 from quan_ly_ho_so.auth import set_auth_database_path
 from quan_ly_ho_so.word.export import generate_document
 
@@ -292,6 +293,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         ca.save(content)
 
         client = self.admin_client()
+        job_before = app.find_record("1")["data"]["Nghề nghiệp"]
         with client:
             form_text = client.get("/person/1/edit").get_data(as_text=True)
             csrf = re.search(r'name="csrf_token" value="([^"]+)"', form_text).group(1)
@@ -305,7 +307,19 @@ class QuanLyHoSoTests(unittest.TestCase):
             preview = client.get("/").get_data(as_text=True)
             self.assertIn("chưa thêm gì vào Excel tổng", preview)
             self.assertIn("2 sẽ được thêm mới", preview)
-            self.assertIn("Thêm 2 người vào Excel tổng", preview)
+            self.assertIn("1 sẽ được cập nhật", preview)
+            self.assertIn("Thêm 2 mới và cập nhật 1 người", preview)
+            # The person already held (matched by CCCD) is shown with what would change, old -> new.
+            update_section = preview.split("Sẽ được cập nhật theo file CA")[1].split("</details>")[0]
+            self.assertIn("TÊN THƯỜNG DÙNG: <s>NGUYỄN VĂN AN</s> → <strong>TRẦN ĐÃ CÓ</strong>", update_section)
+            self.assertIn("Khu phố: <strong>Khu phố 8</strong>", update_section)
+            # Two of the three people already in Excel are not in the file: listed in the preview, no popup.
+            self.assertNotIn('id="missing-ca-dialog"', preview)
+            self.assertIn("2 người trong Excel tổng không có trong file CA", preview)
+            missing_section = preview.split("không có trong file CA (2)")[1].split("</details>")[0]
+            self.assertIn("TRẦN THỊ BÌNH", missing_section)
+            self.assertIn("PHAN TRẦN GIA HUY", missing_section)
+            self.assertNotIn("NGUYỄN VĂN AN", missing_section)
             self.assertEqual(app.query_records("", {}, limit=50, offset=0)[1], 3)
             self.assertEqual(list(self.workbook_path.parent.glob("records.backup-*.xlsx")), [])
             client.post("/import/ca/cancel", data={"csrf_token": csrf})
@@ -321,7 +335,8 @@ class QuanLyHoSoTests(unittest.TestCase):
             self.assertEqual(client.post("/import/ca/confirm", data={"csrf_token": csrf}).status_code, 302)
             page = client.get("/").get_data(as_text=True)
             self.assertIn("2 thêm mới", page)
-            self.assertIn("1 đã có", page)
+            self.assertIn("1 cập nhật", page)
+            self.assertIn("Đã cập nhật theo file CA (1)", page)
             self.assertIn("Không Có Căn Cước", page)
             self.assertNotIn("Kết quả nhập file CA", client.get("/").get_data(as_text=True))
 
@@ -339,7 +354,30 @@ class QuanLyHoSoTests(unittest.TestCase):
         # A single parent line cannot be told apart, so it stays as written instead of being guessed.
         self.assertEqual(second["data"].get("Tên cha", ""), "")
         self.assertIn("Phạm Một Mình 1960,", second["data"].get(OTHER_INFO, ""))
-        self.assertEqual(app.find_record("2")["name"], "TRẦN THỊ BÌNH")  # existing person untouched
+        self.assertEqual(app.find_record("2")["name"], "TRẦN THỊ BÌNH")  # not in the file: untouched
+        # The person in the file was brought up to date; a blank cell in the file erased nothing.
+        updated = app.find_record("1")
+        self.assertEqual(updated["name"], "TRẦN ĐÃ CÓ")
+        self.assertEqual((updated["data"]["Dân tộc"], updated["data"]["Tôn giáo"]), ("Kinh", "Không"))
+        self.assertEqual(updated["data"]["Nghề nghiệp"], job_before)
+        self.assertEqual(updated["quarter"], "Khu phố 8")
+        logs, _ = get_audit_logs()
+        update_log = next(entry for entry in logs if entry["action"] == "update" and entry["stt"] == "1")
+        self.assertIn("file CA", update_log["details"]["reason"])
+        self.assertIn("TÊN THƯỜNG DÙNG", [change["field"] for change in update_log["details"]["changes"]])
+
+        # Importing the same file again finds nothing left to change.
+        with client:
+            csrf = re.search(r'name="csrf_token" value="([^"]+)"', client.get("/person/1/edit").get_data(as_text=True)).group(1)
+            client.post(
+                "/import/ca",
+                data={"csrf_token": csrf, "ca_files": (io.BytesIO(content.getvalue()), "kp7.xlsx")},
+                content_type="multipart/form-data",
+            )
+            again = client.get("/").get_data(as_text=True)
+            self.assertIn("0 sẽ được thêm mới", again)
+            self.assertIn("0 sẽ được cập nhật", again)
+            self.assertNotIn("Cập nhật 0", again)
         self.assertEqual(len(list(self.workbook_path.parent.glob("records.backup-*.xlsx"))), 1)
 
     def test_access_is_limited_to_the_local_network_and_needs_an_account(self):

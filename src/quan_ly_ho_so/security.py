@@ -2,9 +2,10 @@
 
 import hmac
 import ipaddress
+import os
 import secrets
 
-from flask import session
+from flask import request, session
 
 
 def csrf_token():
@@ -27,3 +28,28 @@ def is_local_network(address):
         return False
     ip = getattr(ip, "ipv4_mapped", None) or ip
     return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def online_mode():
+    """True when the app is published to the internet through a tunnel (QLHS_ONLINE=1)."""
+    return os.environ.get("QLHS_ONLINE", "0").lower() in ("1", "true", "yes")
+
+
+def client_ip():
+    """The caller's address. Behind the tunnel every request comes from this computer, so read the
+    address the tunnel forwards; the header is only trusted when the request really came from loopback."""
+    address = request.remote_addr or ""
+    if online_mode() and is_loopback(address):
+        forwarded = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For", "")
+        forwarded = forwarded.split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    return address
+
+
+def is_loopback(address):
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return (getattr(ip, "ipv4_mapped", None) or ip).is_loopback

@@ -8,7 +8,7 @@ echo Quan tri vien phai doi mat khau mac dinh (admin123) truoc, bang cach chay
 echo "Chay Quan Ly Ho So.bat" mot lan, dang nhap admin va doi mat khau.
 set "QLHS_HOST=0.0.0.0"
 echo.
-echo Cua so ung dung se hien dia chi cho may khac (dang http://192.168.x.x:8765).
+echo Cua so ung dung se hien dia chi cho may khac (dang https://192.168.x.x:3000).
 echo Neu Windows hoi ve tuong lua, chon Private networks va bam Allow access.
 echo.
 

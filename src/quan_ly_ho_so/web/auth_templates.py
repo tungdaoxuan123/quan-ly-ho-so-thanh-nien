@@ -340,7 +340,7 @@ PROFILE_PAGE = r"""
               {% endif %}
             </div>
             <div class="perm-desc">
-              Xóa hồ sơ thanh niên khỏi danh sách và Excel (hệ thống tự động sao lưu dự phòng trước khi xóa).
+              Xóa mềm hồ sơ: chỉ ẩn khỏi danh sách, vẫn còn trong tệp Excel và có thể khôi phục.
             </div>
           </div>
         </div>
@@ -640,7 +640,7 @@ ADMIN_PAGE = r"""
             <input type="checkbox" name="can_delete" value="1">
             <span class="perm-info">
               <span class="perm-title">Xóa</span>
-              <span class="perm-desc">Xóa hồ sơ khỏi danh sách và Excel (hệ thống tự động sao lưu dự phòng trước khi xóa).</span>
+              <span class="perm-desc">Xóa mềm hồ sơ: chỉ ẩn khỏi danh sách, vẫn còn trong tệp Excel và có thể khôi phục.</span>
             </span>
           </label>
         </div>
@@ -799,7 +799,7 @@ ADMIN_PAGE = r"""
                 <input type="checkbox" name="can_delete" value="1" {% if u.can_delete %}checked{% endif %}>
                 <span class="perm-info">
                   <span class="perm-title">Xóa</span>
-                  <span class="perm-desc">Xóa hồ sơ khỏi danh sách và Excel.</span>
+                  <span class="perm-desc">Xóa mềm hồ sơ: chỉ ẩn khỏi danh sách, vẫn còn trong tệp Excel và có thể khôi phục.</span>
                 </span>
               </label>
             </div>

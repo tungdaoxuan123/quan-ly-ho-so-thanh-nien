@@ -20,6 +20,8 @@ LIST_TEMPLATE = BASE_DIR / "Mau_Danh_Sach_Thanh_Nien.xlsx"
 DIEN_TEMPLATE_DIR = BASE_DIR / "template"
 # Related paperwork (photos, PDFs, converted Word files), one folder per CCCD.
 DOCUMENT_DIR = BASE_DIR / "Tài liệu liên quan"
+# LAN-mode HTTPS: the local CA phones install (ca.pem) and the certificate it signs for this computer.
+HTTPS_DIR = BASE_DIR / "HTTPS"
 DEFAULT_OUTPUT_NAME = "Hồ sơ thanh niên đã tạo"
 MAX_RECORDS_PER_PAGE = 50
 # A per-diện export covers the whole workbook, not one page of it.

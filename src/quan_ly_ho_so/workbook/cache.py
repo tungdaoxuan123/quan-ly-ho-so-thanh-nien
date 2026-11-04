@@ -549,11 +549,39 @@ def database_record_count():
         connection.close()
 
 
+def records_by_citizen_id():
+    """Every record that has a CCCD (soft-deleted included), keyed by that CCCD; the first row wins."""
+    connection = database_connection()
+    try:
+        rows = connection.execute("SELECT * FROM records WHERE citizen_id <> '' ORDER BY row_number").fetchall()
+        found = {}
+        for row in rows:
+            found.setdefault(row["citizen_id"], row_to_record(row))
+        return found
+    finally:
+        connection.close()
+
+
 def all_citizen_ids():
     """Every CCCD in the workbook, soft-deleted records included."""
     connection = database_connection()
     try:
         return {row[0] for row in connection.execute("SELECT citizen_id FROM records WHERE citizen_id <> ''")}
+    finally:
+        connection.close()
+
+
+def active_people():
+    """Everyone in the workbook who is not soft-deleted, in sheet order, as plain dicts."""
+    connection = database_connection()
+    try:
+        rows = connection.execute(
+            "SELECT stt, name, citizen_id, quarter FROM records WHERE is_deleted = 0 ORDER BY row_number"
+        ).fetchall()
+        return [
+            {"stt": row["stt"], "name": row["name"], "citizen_id": row["citizen_id"] or "", "quarter": row["quarter"] or ""}
+            for row in rows
+        ]
     finally:
         connection.close()
 

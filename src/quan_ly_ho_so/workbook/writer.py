@@ -21,10 +21,11 @@ from quan_ly_ho_so.workbook.cache import (
 )
 
 
-def copy_row_style(sheet, source_row, target_row):
+def copy_row_style(sheet, source_row, target_row, width=None):
+    """`width`: pass sheet.max_column when copying in a loop; openpyxl recounts it over every cell on each read."""
     if not source_row:
         return
-    for column in range(1, sheet.max_column + 1):
+    for column in range(1, (width or sheet.max_column) + 1):
         source = sheet.cell(source_row, column)
         target = sheet.cell(target_row, column)
         if source.has_style:
@@ -146,10 +147,12 @@ def save_person(path, sheet_name, updates, expected_signature, original_stt=None
             logging.warning("Could not close workbook handle: %s", error)
 
 
-def append_people(path, sheet_name, people, expected_signature):
-    """Append new records in one atomic write and return ([their STTs], backup path).
+def append_people(path, sheet_name, people, expected_signature, updates=()):
+    """Append new records and update existing ones in one atomic write; return ([new STTs], backup path).
 
     `people` is a list of {normalized header: value}; headers the sheet lacks are ignored.
+    `updates` is a list of (row number, CCCD, {header: value}): only those cells are rewritten, and the row
+    must still belong to that CCCD.
     """
     path = checked_writable_path(path, expected_signature)
     workbook = load_workbook(path, read_only=False, data_only=False)
@@ -163,11 +166,20 @@ def append_people(path, sheet_name, people, expected_signature):
         if not stt_column or not name_column:
             raise WorkbookError("Hàng 1 của tệp Excel phải có cột STT và TÊN THƯỜNG DÙNG.")
 
+        citizen_id_column = headers.get("Căn cước")
+        for row, citizen_id, values in updates:
+            if not citizen_id_column or display_value(sheet.cell(row, citizen_id_column).value) != citizen_id:
+                raise WorkbookError(f"Dòng {row} của Excel không còn là CCCD {citizen_id}. Hãy làm mới rồi chọn lại tệp CA.")
+            for header, value in values.items():
+                if header in headers and header not in ("STT", "Căn cước"):
+                    sheet.cell(row, headers[header]).value = value
+
         last_row, highest_stt = last_person_row(sheet, stt_column, name_column)
         assigned = []
+        width = sheet.max_column
         for offset, person in enumerate(people, start=1):
             row = last_row + offset
-            copy_row_style(sheet, last_row, row)
+            copy_row_style(sheet, last_row, row, width)
             sheet.cell(row, stt_column).value = highest_stt + offset
             for header, value in person.items():
                 if header in headers and header != "STT":

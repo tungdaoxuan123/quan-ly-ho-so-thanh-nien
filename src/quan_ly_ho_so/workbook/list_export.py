@@ -71,10 +71,11 @@ def build_list_workbook(records, template_path):
         sheet.row_dimensions[row].height = None
 
     app_keys = dict(APP_COLUMNS)
+    width = sheet.max_column
     for offset, record in enumerate(records):
         row = FIRST_DATA_ROW + offset
         if row != style_row:
-            copy_row_style(sheet, style_row, row)
+            copy_row_style(sheet, style_row, row, width)
         data = record["data"]
         for header, column in headers.items():
             cell = sheet.cell(row, column)

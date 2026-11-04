@@ -18,7 +18,7 @@ Sau đó, nhấp đúp [Chạy Quản Lý Hồ Sơ.command](Chay%20Quan%20Ly%20H
 .venv/bin/python run.py
 ```
 
-Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
+Trình duyệt sẽ mở tại `http://127.0.0.1:3000`.
 
 ## Tài khoản, phân quyền và dùng chung trong mạng nội bộ (LAN)
 
@@ -28,16 +28,36 @@ Trình duyệt sẽ mở tại `http://127.0.0.1:8765`.
 - **Chỉ xem và in:** chỉ quyền *Xem* — xem hồ sơ, xem trước, tạo Word (in); không xuất Excel, không sửa.
 - **Cập nhật:** *Tạo + Xem + Sửa*. Quyền *Xuất file* (Excel hàng loạt, Excel theo diện) và *Xóa* tích riêng.
 
+**Nhập file CA** (nút *Nhập file CA*): đọc các tệp khu phố của bộ CA và cho xem trước, chưa ghi gì. Khi xác nhận, theo CCCD: người chưa có được thêm mới; người đã có được cập nhật các ô mà file CA có dữ liệu và khác hiện tại (ô trống trong file CA không xóa dữ liệu đang có, Khu phố lấy từ cột *Khu phố mới*). Tất cả ghi một lần, có bản sao lưu Excel trước đó và có nhật ký từng người (giá trị cũ → mới).
+
 Mọi thao tác ghi (sửa, thêm, xóa/khôi phục, sửa hàng loạt, nhập file CA, tải tài liệu, xuất Excel) được ghi vào nhật ký theo người dùng; quản trị viên xem tại **Nhật ký**. Quyền được nạp lúc đăng nhập: sau khi đổi quyền, người đó cần đăng nhập lại.
 
 Khách (không cần tài khoản) vào `/tra-cuu`, nhập số CCCD: nếu chưa có thì điền form tạo hồ sơ mới, nếu đã có thì chỉ được xem — khách không sửa được.
 
 Mặc định ứng dụng chỉ mở trên máy đang chạy (`127.0.0.1`). Để máy khác trong cùng mạng truy cập:
 
-- **Windows:** nhấp đúp `Chay Quan Ly Ho So (LAN).bat`. Cửa sổ sẽ hiện địa chỉ dạng `http://192.168.x.x:8765`; nếu Windows hỏi về tường lửa, chọn *Private networks* → *Allow access*.
+- **macOS:** nhấp đúp `Chay Quan Ly Ho So (LAN).command`.
+- **Windows:** nhấp đúp `Chay Quan Ly Ho So (LAN).bat`. Cửa sổ sẽ hiện địa chỉ dạng `https://192.168.x.x:3000`; nếu Windows hỏi về tường lửa, chọn *Private networks* → *Allow access*.
 - **Mac / dòng lệnh:** `QLHS_HOST=0.0.0.0 .venv/bin/python3 run.py`.
 
-Ứng dụng từ chối mở cho LAN nếu tài khoản quản trị vẫn dùng mật khẩu mặc định, và chỉ nhận kết nối từ địa chỉ mạng nội bộ/riêng (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), không nhận từ Internet.
+Nếu tài khoản quản trị vẫn dùng mật khẩu mặc định, ứng dụng sẽ hỏi đặt mật khẩu mới (ít nhất 8 ký tự) ngay trong cửa sổ dòng lệnh trước khi mở cho người khác. Ở chế độ LAN, ứng dụng chỉ nhận kết nối từ địa chỉ mạng nội bộ/riêng (`192.168.x.x`, `10.x.x.x`, `172.16–31.x.x`), không nhận từ Internet.
+
+**Địa chỉ cố định:** cửa sổ ứng dụng hiện địa chỉ dạng `https://ten-may.local:3000` (tên máy, macOS xem ở *Cài đặt hệ thống* → *Chung* → *Chia sẻ* → *Tên máy chủ cục bộ*). Địa chỉ này không đổi khi tắt máy hay kết nối lại wifi, khác với địa chỉ IP `192.168.x.x`. Thiết bị nào không mở được tên `.local` (một số máy Android cũ) thì dùng địa chỉ IP hiện ngay bên dưới.
+
+**HTTPS trong LAN:** chế độ LAN chạy `https://` (Chrome trên điện thoại hay tự chuyển sang https và không mở được http). Lần chạy đầu ứng dụng tự tạo chứng chỉ trong thư mục `HTTPS/` (không đưa lên git; `ca-key.pem` và `key.pem` là khóa bí mật, không gửi cho ai). Lần đầu mỗi thiết bị sẽ báo *kết nối không riêng tư*: bấm *Nâng cao* → *Tiếp tục*. Muốn hết hẳn cảnh báo, cài chứng chỉ một lần trên từng thiết bị — tải tại `https://192.168.x.x:3000/chung-chi`:
+
+- **iPhone:** mở địa chỉ trên bằng **Safari** → *Cho phép* tải hồ sơ → *Cài đặt* → *Đã tải về hồ sơ* → *Cài đặt*; rồi *Cài đặt* → *Cài đặt chung* → *Giới thiệu* → *Cài đặt tin cậy chứng nhận* → bật *Quan Ly Ho So - CA noi bo*. Chrome trên iPhone còn cần bật *Cài đặt* → *Chrome* → *Mạng cục bộ*.
+- **Android:** tải tệp `QuanLyHoSo-CA.crt`, rồi *Cài đặt* → *Bảo mật* → *Mã hóa và thông tin xác thực* → *Cài đặt chứng chỉ* → *Chứng chỉ CA* → chọn tệp vừa tải.
+
+Chứng chỉ này chỉ có hiệu lực cho địa chỉ mạng nội bộ, không dùng được để giả mạo trang web khác. Đổi địa chỉ IP thì ứng dụng tự cấp lại, không cần cài lại. Xóa thư mục `HTTPS/` thì phải cài lại trên mọi thiết bị.
+
+### Đưa ra Internet (một nút)
+
+Wifi công ty thường chặn các máy nói chuyện với nhau, hoặc người dùng ở ngoài mạng. Khi đó dùng `Chay Online.command` (macOS) hoặc `Chay Online.bat` (Windows). Cần cài `cloudflared` một lần (`brew install cloudflared` hoặc `winget install Cloudflare.cloudflared`).
+
+File này sẽ: hỏi đặt mật khẩu admin mới nếu còn mật khẩu mặc định, bật ứng dụng (chỉ nghe ở `127.0.0.1`), rồi mở đường hầm Cloudflare và in địa chỉ `https://….trycloudflare.com` để gửi cho mọi người (khách tra cứu thêm `/tra-cuu`). Địa chỉ đổi mỗi lần bật; đóng cửa sổ là tắt truy cập từ ngoài. Máy phải đang mở.
+
+Chế độ online (`QLHS_ONLINE=1`) tắt giới hạn mạng nội bộ nên bảo vệ bằng: bắt buộc đăng nhập, khóa 15 phút sau 5 lần sai mật khẩu, giới hạn 30 lượt tra cứu CCCD/10 phút và 5 hồ sơ khách tạo/giờ cho mỗi địa chỉ, cookie phiên chỉ gửi qua https.
 
 Lưu ý: mọi người dùng chung một tệp Excel và một cơ sở dữ liệu trên máy chạy ứng dụng; chưa có cơ chế khóa khi nhiều người lưu cùng lúc. Các nút "Mở bằng Excel" / "Đổi tệp Excel" tác động lên máy chạy ứng dụng.
 
