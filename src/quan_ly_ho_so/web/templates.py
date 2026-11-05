@@ -116,7 +116,12 @@ PAGE = r"""
     .row-menu-list a, .row-menu-list button { display: block; width: 100%; text-align: left; padding: 8px 12px; background: none; color: var(--text); border: 0; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; text-decoration: none; }
     .row-menu-list .row-delete { color: #a3323b; }
     .row-menu-list a:hover, .row-menu-list button:hover { background: var(--primary-soft); color: var(--primary); }
-    .pagination { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 20px; } .pagination .button { min-width: 38px; padding: 7px 10px; }
+    .pagination { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; margin-top: 20px; } .pagination .button { min-width: 38px; padding: 7px 10px; }
+    .pagination .page-gap { padding: 0 4px; color: #637089; } .page-jump { display: flex; align-items: center; gap: 6px; margin-left: 12px; }
+    /* The global label stacks its text above the field (form layout); here text, box and "Đi" sit on one line, all as tall as the page buttons. */
+    .page-jump label { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; font-size: 14px; }
+    .pagination .button, .page-jump input, .page-jump button { height: 36px; } .page-jump input { width: 72px; padding: 0 8px; } .page-jump button { padding: 0 14px; }
+    @media (max-width: 700px) { .page-jump { margin-left: 0; width: 100%; justify-content: center; } }
     @media (max-width: 700px) { .search-row { grid-template-columns: 1fr; } .search-row button, .search-row .button { width: 100%; } }
   </style>
 </head>
@@ -170,7 +175,7 @@ PAGE = r"""
       <div class="table-wrap"><table><thead><tr><th><input type="checkbox" id="select-all" aria-label="Chọn tất cả"></th><th>STT</th><th>Họ và tên</th><th>Năm sinh</th><th>CCCD</th><th>Nghề nghiệp</th><th>Khu phố</th><th>Diện</th><th>Ngày tạo</th><th>Ngày cập nhật</th><th class="actions-head">Thao tác</th></tr></thead><tbody>{% for record in records %}<tr><td><input class="row-select" type="checkbox" name="stt" value="{{ record.stt }}" data-name="{{ record.name }}" form="batch-form" aria-label="Chọn hồ sơ {{ record.stt }}"></td><td class="stt">{{ record.stt }}</td><td class="name">{{ record.name }}</td><td>{{ record.birth_year }}</td><td class="cccd">{{ record.citizen_id }}</td><td>{{ record.occupation }}</td><td>{% if record.quarter %}{{ record.quarter }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td>{% if record.dien %}{{ record.dien }}{% else %}<span class="muted">&lt;chưa có&gt;</span>{% endif %}</td><td class="date" title="{{ record.created_at }}">{{ record.created_at[:10] }}</td><td class="date" title="{{ record.updated_at }}">{{ record.updated_at[:10] }}</td><td class="actions-cell"><details class="row-menu" ontoggle="positionRowMenu(this)"><summary class="button secondary">Thao tác</summary><div class="row-menu-list">{% if current_user.can_update %}<a href="{{ url_for('edit_person', stt=record.stt) }}">Sửa</a>{% endif %}{% if current_user.can_read %}<a href="{{ url_for('preview_person', stt=record.stt) }}">Xem trước</a><form action="{{ url_for('generate', stt=record.stt) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><button type="submit">Tạo Word</button></form>{% endif %}{% if current_user.is_admin %}<a href="{{ url_for('admin_audit_log', stt=record.stt) }}">Nhật ký hoạt động</a>{% endif %}{% if not current_user.can_delete %}{% elif record.is_deleted %}<form action="{{ url_for('bulk_restore') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit">Khôi phục</button></form>{% else %}<form action="{{ url_for('bulk_delete') }}" method="post" onsubmit="return confirm('Xóa hồ sơ STT {{ record.stt }} - {{ record.name }}? Hồ sơ chỉ bị ẩn khỏi ứng dụng, vẫn còn trong tệp Excel và có thể khôi phục.')"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="stt" value="{{ record.stt }}"><button type="submit" class="row-delete">Xóa</button></form>{% endif %}</div></details></td></tr>{% else %}<tr><td colspan="11" class="empty">Không tìm thấy hồ sơ phù hợp.</td></tr>{% endfor %}</tbody></table></div>
       <p class="table-hint muted">Chọn nhiều hồ sơ rồi bấm "Tạo Word hàng loạt" để in chung một tệp Word gộp cho cả lô — mỗi tờ sẽ dùng phần trống của trang I-IV để in phần V-VI của người ngay trước, tiết kiệm giấy khi gấp thành tập.{% if current_user.can_export %} Bấm "Tạo Excel hàng loạt" để xuất danh sách những hồ sơ đã chọn ra tệp Excel theo mẫu, kèm cột "Khu phố" và "Diện" ở cuối.{% endif %}</p>
     </section>
-    {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% for page_number in range(1, pages + 1) %}<a class="button {{ 'secondary' if page_number != page else '' }}" href="{{ page_urls[page_number] }}">{{ page_number }}</a>{% endfor %}</nav>{% endif %}
+    {% if pages > 1 %}<nav class="pagination" aria-label="Phân trang">{% if pagination.previous %}<a class="button secondary" href="{{ pagination.previous }}">‹ Trước</a>{% endif %}{% for link in pagination.links %}{% if link %}<a class="button {{ '' if link[0] == page else 'secondary' }}" href="{{ link[1] }}"{% if link[0] == page %} aria-current="page"{% endif %}>{{ link[0] }}</a>{% else %}<span class="page-gap">…</span>{% endif %}{% endfor %}{% if pagination.next %}<a class="button secondary" href="{{ pagination.next }}">Sau ›</a>{% endif %}<form class="page-jump" method="get" action="{{ url_for('index') }}">{% for name, value in pagination.fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}<label>Đến trang <input type="number" name="page" min="1" max="{{ pages }}" value="{{ page }}" inputmode="numeric"></label><span class="muted">/ {{ pages }}</span><button type="submit" class="secondary">Đi</button></form></nav>{% endif %}
     <script>
       function positionRowMenu(d) { if (!d.open) return; document.querySelectorAll('.row-menu[open]').forEach(function(o){ if (o !== d) o.open = false; }); var r = d.getBoundingClientRect(), m = d.querySelector('.row-menu-list'); m.style.left = r.left + 'px'; m.style.top = (r.bottom + 4) + 'px'; }
       document.addEventListener('click', function(e){ document.querySelectorAll('.row-menu[open]').forEach(function(o){ if (!o.contains(e.target)) o.open = false; }); });
@@ -886,6 +891,7 @@ GUEST_PAGE = r"""
     </div>
   </form>
   {% endif %}
+  <p class="muted" style="text-align:center;margin-top:28px"><a href="{{ url_for('login') }}">Cán bộ đăng nhập</a></p>
 </body>
 </html>
 """
@@ -1193,3 +1199,27 @@ def page_url(page_number, params):
     query = dict(params)
     query["page"] = page_number
     return url_for("index", **query)
+
+
+def page_links(page, pages, params, around=2):
+    """The record list's page bar: first, last and `around` pages either side of the current one, None for "…".
+
+    Printing every number stops working at a few thousand records (7000 records are 140 pages). `fields` are the
+    current search and filters, so "Đến trang" keeps them.
+    """
+    shown = sorted({1, pages, *range(max(1, page - around), min(pages, page + around) + 1)})
+    links, previous = [], 0
+    for number in shown:
+        if number - previous == 2:  # a lone hidden page: show it rather than "…"
+            links.append((previous + 1, page_url(previous + 1, params)))
+        elif number - previous > 2:
+            links.append(None)
+        links.append((number, page_url(number, params)))
+        previous = number
+    fields = [(name, item) for name, value in params.items() for item in (value if isinstance(value, list) else [value]) if item]
+    return {
+        "links": links,
+        "previous": page_url(page - 1, params) if page > 1 else "",
+        "next": page_url(page + 1, params) if page < pages else "",
+        "fields": fields,
+    }

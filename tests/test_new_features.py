@@ -364,6 +364,66 @@ class NewFeaturesTests(unittest.TestCase):
         self.assertEqual(find_record_by_citizen_id("079206000999")["quarter"], "Khu phố 4")
         self.assertEqual(app.state["record_count"], 3)
 
+    def test_bare_address_sends_guests_to_lookup_and_staff_to_the_list(self):
+        client = app.app.test_client()
+        root = client.get("/")
+        self.assertEqual(root.status_code, 302)
+        self.assertTrue(root.headers["Location"].endswith("/tra-cuu"))
+        lookup = client.get("/tra-cuu").get_data(as_text=True)
+        self.assertIn('<a href="/login">Cán bộ đăng nhập</a>', lookup)
+        # Any other page (a bookmarked filter, a record) still asks to log in and comes back afterwards.
+        self.assertIn("/login?next=", client.get("/?page=2").headers["Location"])
+        self.assertIn("/login", client.get("/person/1/edit").headers["Location"])
+
+        self._login(client)
+        home = client.get("/")
+        self.assertEqual(home.status_code, 200)
+        self.assertIn("NGUYỄN VĂN AN", home.get_data(as_text=True))
+
+    def test_page_bar_shows_a_window_of_pages_not_every_number(self):
+        from quan_ly_ho_so.web.templates import page_links
+
+        def numbers(page, pages):
+            return [link[0] if link else "…" for link in page_links(page, pages, {"q": ""})["links"]]
+
+        with app.app.test_request_context():
+            self.assertEqual(numbers(70, 140), [1, "…", 68, 69, 70, 71, 72, "…", 140])
+            self.assertEqual(numbers(1, 140), [1, 2, 3, "…", 140])
+            self.assertEqual(numbers(140, 140), [1, "…", 138, 139, 140])
+            self.assertEqual(numbers(5, 140), [1, 2, 3, 4, 5, 6, 7, "…", 140])  # a lone hidden page 2 is shown, not "…"
+            self.assertEqual(numbers(2, 3), [1, 2, 3])
+            bar = page_links(70, 140, {"q": "an", "dien": ["DU_HOC", "GIA_CANH"], "address": ""})
+            self.assertEqual(bar["fields"], [("q", "an"), ("dien", "DU_HOC"), ("dien", "GIA_CANH")])
+            self.assertIn("page=69", bar["previous"])
+            self.assertIn("page=71", bar["next"])
+            self.assertEqual(page_links(1, 140, {})["previous"], "")
+
+    def test_record_list_with_many_pages_renders_compact_page_bar(self):
+        wb = load_workbook(self.workbook_path)
+        sheet = wb.active
+        headers = [cell.value for cell in sheet[1]]
+        for number in range(3, 3 + 400):  # 402 records -> 9 pages of 50
+            row = [None] * len(headers)
+            row[headers.index("STT")] = number
+            row[headers.index("TÊN THƯỜNG DÙNG")] = f"NGƯỜI SỐ {number}"
+            sheet.append(row)
+        wb.save(self.workbook_path)
+        app.set_workbook(self.workbook_path, persist=False)
+
+        client = app.app.test_client()
+        self._login(client)
+        page = client.get("/?page=2&q=ng").get_data(as_text=True)
+        bar = page.split('<nav class="pagination"')[1].split("</nav>")[0]
+        self.assertIn('aria-current="page">2</a>', bar)
+        self.assertIn("‹ Trước", bar)
+        self.assertIn("Sau ›", bar)
+        self.assertIn('<span class="page-gap">…</span>', bar)
+        self.assertNotIn(">7</a>", bar)  # pages 5-8 are not printed: 1 2 3 4 … 9
+        self.assertIn('max="9"', bar)
+        self.assertIn('<input type="hidden" name="q" value="ng">', bar)  # "Đến trang" keeps the search
+        # Jumping past the end lands on the last page.
+        self.assertIn('aria-current="page">9</a>', client.get("/?page=999").get_data(as_text=True))
+
     def test_lan_certificate_covers_address_and_reissues_only_when_address_changes(self):
         import ipaddress
         from cryptography import x509

@@ -113,8 +113,8 @@ class AuthAndPermissionsTests(unittest.TestCase):
     def test_authentication_flow_and_session_caching(self):
         client = app.app.test_client()
 
-        # Unauthenticated request redirects to /login
-        resp = client.get("/")
+        # Unauthenticated request to a protected page redirects to /login (the bare "/" goes to /tra-cuu instead)
+        resp = client.get("/person/1/edit")
         self.assertEqual(resp.status_code, 302)
         self.assertIn("/login", resp.headers.get("Location", ""))
 

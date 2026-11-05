@@ -387,7 +387,7 @@ class QuanLyHoSoTests(unittest.TestCase):
         self.assertEqual(client.get("/tra-cuu", environ_overrides={"REMOTE_ADDR": "::ffff:8.8.8.8"}).status_code, 403)
         self.assertEqual(client.get("/login", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
         self.assertEqual(client.get("/tra-cuu", environ_overrides={"REMOTE_ADDR": "192.168.1.20"}).status_code, 200)
-        locked = client.get("/")
+        locked = client.get("/person/1/edit")
         self.assertEqual(locked.status_code, 302)
         self.assertIn("/login", locked.headers["Location"])
         self.assertEqual(self.admin_client().get("/").status_code, 200)
@@ -494,7 +494,7 @@ class QuanLyHoSoTests(unittest.TestCase):
     def test_browser_routes_and_word_generation(self):
         client = app.app.test_client()
         with client:
-            unauth = client.get("/")
+            unauth = client.get("/person/1/edit")
             self.assertEqual(unauth.status_code, 302)
             self.assertIn("/login", unauth.headers.get("Location", ""))
 

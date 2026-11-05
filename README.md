@@ -51,6 +51,33 @@ Nếu tài khoản quản trị vẫn dùng mật khẩu mặc định, ứng d�
 
 Chứng chỉ này chỉ có hiệu lực cho địa chỉ mạng nội bộ, không dùng được để giả mạo trang web khác. Đổi địa chỉ IP thì ứng dụng tự cấp lại, không cần cài lại. Xóa thư mục `HTTPS/` thì phải cài lại trên mọi thiết bị.
 
+### Máy Windows không có mạng (một nút bấm)
+
+Chuẩn bị trên một máy có mạng (Mac/Linux, trong thư mục mã nguồn): chạy `./build_windows_offline.sh`. Lệnh này tạo `dist/QuanLyHoSo-Windows.zip` (~40 MB) gồm Python cho Windows, đủ thư viện và ứng dụng — không chứa dữ liệu Excel hay tài khoản của máy đang chạy.
+
+Trên máy Windows 10/11 không có mạng:
+
+1. Chép `QuanLyHoSo-Windows.zip` sang (USB), bấm chuột phải → *Extract All*. Chép file Excel tổng vào máy.
+2. **Một lần duy nhất:** bấm chuột phải `Mo tuong lua Windows (Run as administrator).bat` → *Run as administrator*. Wifi không có internet thường bị Windows coi là mạng *Public* nên nếu bỏ bước này điện thoại sẽ không vào được.
+3. Bấm chuột phải `Chay Quan Ly Ho So (LAN).bat` → *Send to* → *Desktop (create shortcut)*. Từ giờ chỉ cần nhấp đúp biểu tượng này trên Desktop. Lần đầu cửa sổ sẽ hỏi đặt mật khẩu admin mới.
+4. Cửa sổ hiện địa chỉ dạng `https://192.168.x.x:3000` — điện thoại dùng địa chỉ IP này (không dùng tên `.local` trên Android). Đóng cửa sổ là tắt ứng dụng.
+
+**Giữ địa chỉ IP cố định** để không phải báo địa chỉ mới cho mọi người — chọn một trong hai:
+
+- **Một nút trên Windows:** nhấp đúp `Dat IP co dinh.bat` (bấm *Yes* khi Windows hỏi quyền). Máy giữ luôn IP đang có và hiện địa chỉ cho điện thoại. Muốn bỏ (ví dụ mang máy sang wifi khác): `Tra lai IP tu dong.bat`. Lưu ý: router không biết IP này đã có chủ, nên hiếm khi có thể cấp trùng cho thiết bị khác; nếu bị trùng, dùng cách dưới.
+- **Giữ IP trên router (chắc chắn nhất):** vào trang quản trị router (thường `http://192.168.1.1`) → *DHCP Reservation / Static Lease / IP tĩnh* → gán cố định một IP cho máy Windows.
+
+Tên máy (`https://<tên-máy>.local:3000`, hiện trong cửa sổ ứng dụng) không đổi khi IP đổi và dùng được trên iPhone, máy tính; Chrome trên Android thường không tìm được tên `.local`, nên điện thoại Android dùng địa chỉ IP.
+
+### Điện thoại Android: Chrome không vào được (trình duyệt khác vào được)
+
+Ứng dụng đã chạy https; khi Chrome báo *không thể truy cập trang web* thì điện thoại đang chặn Chrome, không phải do máy chủ. Thử nhanh: mở `http://192.168.1.1` (trang router) bằng Chrome — nếu cũng không vào được thì làm lần lượt:
+
+1. **Wifi không có internet:** Android thấy wifi không có mạng sẽ tự gửi dữ liệu qua 4G, nên không tới được máy trong wifi. Khi điện thoại báo *Wi-Fi không có kết nối Internet*, bấm vào → *Vẫn kết nối* / *Không hỏi lại*. Tắt *Tự động chuyển sang dữ liệu di động* (Samsung: *Cài đặt → Kết nối → Wi-Fi → ⋮ → Intelligent Wi-Fi*; máy khác: *Wi-Fi → Nâng cao*). Cách đơn giản nhất: **tắt dữ liệu di động** khi dùng ứng dụng.
+2. **Quyền mạng cục bộ của Chrome:** *Cài đặt → Ứng dụng → Chrome → Quyền* → cho phép *Thiết bị ở gần* / *Mạng cục bộ* (nếu có). Khi Chrome hỏi có cho truy cập thiết bị trong mạng cục bộ không, chọn *Cho phép*.
+3. **Chặn mạng theo ứng dụng** (Xiaomi, Oppo, Realme, Vivo…): *Cài đặt → Ứng dụng → Chrome → Dữ liệu di động & Wi-Fi* → cho phép Wi-Fi. Tắt VPN, trình chặn quảng cáo, và *Cài đặt → Mạng → DNS riêng tư* đặt về *Tắt/Tự động*.
+4. Mở được rồi mà Chrome báo *kết nối không riêng tư*: bấm *Nâng cao → Tiếp tục*, hoặc cài chứng chỉ tại `https://<địa chỉ máy>:3000/chung-chi` để hết cảnh báo.
+
 ### Đưa ra Internet (một nút)
 
 Wifi công ty thường chặn các máy nói chuyện với nhau, hoặc người dùng ở ngoài mạng. Khi đó dùng `Chay Online.command` (macOS) hoặc `Chay Online.bat` (Windows). Cần cài `cloudflared` một lần (`brew install cloudflared` hoặc `winget install Cloudflare.cloudflared`).

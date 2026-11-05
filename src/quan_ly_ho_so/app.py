@@ -101,7 +101,7 @@ from quan_ly_ho_so.web.templates import (
     LOGIN_PAGE,
     PAGE,
     PROFILE_PAGE,
-    page_url,
+    page_links,
     render_form,
     render_guest_form,
     render_preview,
@@ -178,6 +178,9 @@ def require_authentication():
         return None
     user = current_user()
     if not user:
+        # The bare address (https://<máy>:3000) is what guests type: send them to the CCCD lookup, not the login form.
+        if request.endpoint == "index" and request.method == "GET" and not request.query_string:
+            return redirect(url_for("guest_lookup"))
         if request.method == "GET":
             next_url = request.full_path if request.query_string else request.path
             return redirect(url_for("login", next=next_url))
@@ -575,7 +578,7 @@ def index():
             shown_end=0,
             page=1,
             pages=1,
-            page_urls={},
+            pagination=None,
             query="",
             filters={},
             filters_active=False,
@@ -632,7 +635,7 @@ def index():
         shown_end=start + len(visible),
         page=page,
         pages=pages,
-        page_urls={number: page_url(number, params) for number in range(1, pages + 1)},
+        pagination=page_links(page, pages, params),
         query=query,
         filters=filters,
         filters_active=any(filters.values()),
