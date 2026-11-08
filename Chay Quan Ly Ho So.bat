@@ -2,13 +2,15 @@
 setlocal
 set "APP_DIR=%~dp0"
 
-if exist "%APP_DIR%dist\QuanLyHoSoThanhNien\QuanLyHoSoThanhNien.exe" (
-  start "Quan ly ho so thanh nien" "%APP_DIR%dist\QuanLyHoSoThanhNien\QuanLyHoSoThanhNien.exe"
+if exist "%APP_DIR%.venv\Scripts\python.exe" (
+  cd /d "%APP_DIR%"
+  "%APP_DIR%.venv\Scripts\python.exe" "%APP_DIR%run.py"
+  if errorlevel 1 pause
   exit /b 0
 )
 
-if exist "%APP_DIR%.venv\Scripts\python.exe" (
-  start "Quan ly ho so thanh nien" "%APP_DIR%.venv\Scripts\python.exe" "%APP_DIR%run.py"
+if exist "%APP_DIR%dist\QuanLyHoSoThanhNien\QuanLyHoSoThanhNien.exe" (
+  start "Quan ly ho so thanh nien" "%APP_DIR%dist\QuanLyHoSoThanhNien\QuanLyHoSoThanhNien.exe"
   exit /b 0
 )
 
