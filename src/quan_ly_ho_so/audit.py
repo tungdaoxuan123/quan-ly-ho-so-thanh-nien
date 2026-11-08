@@ -148,6 +148,11 @@ def log_action(
         logging.warning("Could not write audit log: %s", error)
 
 
+def comparable_field_value(value):
+    """HTML form submission uses CRLF; Excel cells commonly use LF."""
+    return (value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def compute_changes(
     old_values: Dict[str, str],
     new_values: Dict[str, str],
@@ -165,8 +170,8 @@ def compute_changes(
     """
     changes = []
     for key in new_values:
-        old = (old_values.get(key) or "").strip()
-        new = (new_values.get(key) or "").strip()
+        old = comparable_field_value(old_values.get(key))
+        new = comparable_field_value(new_values.get(key))
         if old != new:
             label = field_labels.get(key, key)
             changes.append({"field": label, "from": old, "to": new})

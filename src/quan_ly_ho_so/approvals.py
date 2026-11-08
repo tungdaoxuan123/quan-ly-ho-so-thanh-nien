@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from quan_ly_ho_so.audit import _audit_database_path, compute_changes, log_action
+from quan_ly_ho_so.audit import _audit_database_path, comparable_field_value, compute_changes, log_action
 from quan_ly_ho_so.forms.fields import (
     coerce_cell_value,
     field_definitions,
@@ -312,7 +312,7 @@ def approve_request(
             raise ValueError(f"Không được thay đổi trường định danh: {header}.")
         if header not in columns_by_header:
             raise ValueError(f"Tệp Excel không còn cột {header}. Không thể phê duyệt yêu cầu này.")
-        if display_value(record["data"].get(header)).strip() != display_value(change["from"]).strip():
+        if comparable_field_value(display_value(record["data"].get(header))) != comparable_field_value(display_value(change["from"])):
             raise ValueError(f"Thông tin {header} đã thay đổi sau khi gửi yêu cầu. Hãy từ chối và đề nghị gửi lại.")
         updates[columns_by_header[header]] = coerce_cell_value(header, display_value(change["to"]))
     if not updates:

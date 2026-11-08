@@ -98,6 +98,25 @@ class ProfileApprovalsWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(request)
         return request
 
+    def test_browser_newlines_do_not_add_unchanged_notes_to_request(self):
+        notes_header = "TẤT CẢ THÔNG TIN KHÁC\nLIÊN QUAN ĐẾN THANH NIÊN"
+        notes = "Cha: 0700000000\nMe: 0300000000\nTn: 0380000000"
+        workbook = load_workbook(self.workbook_path)
+        workbook.active.cell(3, app.state["headers"][notes_header]).value = notes
+        workbook.save(self.workbook_path)
+        workbook.close()
+        app.refresh_state(force=True)
+        pending = self.submit_update(**{
+            "Nơi đăng ký khai sinh (2 cấp)": "Phường Hạnh Thông, TP.Hồ Chí Minh 123",
+            notes_header: notes.replace("\n", "\r\n"),
+        })
+        self.assertEqual(len(pending["changes"]), 1)
+        self.assertEqual(pending["changes"][0]["field"], "Nơi đăng ký khai sinh (2 cấp)")
+        approve_request(pending["id"], "admin")
+        workbook = load_workbook(self.workbook_path)
+        self.assertEqual(workbook.active.cell(3, app.state["headers"][notes_header]).value, notes)
+        workbook.close()
+
     def test_approval_preserves_unrelated_newer_edits_and_identity_cell_types(self):
         pending = self.submit_update(**{"Nghề nghiệp": "Bác sĩ"})
         # Excel changed after submission; approval must refresh without needing a page visit.

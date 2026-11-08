@@ -438,7 +438,9 @@ class NewFeaturesTests(unittest.TestCase):
         self.assertEqual(ips, [ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("192.168.1.69")])
         names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
         self.assertEqual(names, ["localhost", "may-chu.local"])
-        self.assertEqual(os.stat(key_path).st_mode & 0o777, 0o600)
+        # Windows uses ACLs rather than POSIX owner/group mode bits.
+        if os.name != "nt":
+            self.assertEqual(os.stat(key_path).st_mode & 0o777, 0o600)
 
         # Same address and name: nothing rewritten. New address or name: new server certificate, same CA,
         # so phones need no reinstall.

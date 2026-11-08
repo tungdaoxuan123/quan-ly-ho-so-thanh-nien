@@ -101,6 +101,21 @@ def refresh_state(force=False):
 def native_workbook_dialog():
     root = None
     try:
+        if sys.platform == "win32":
+            # Flask handles requests on worker threads. Tk dialogs require their
+            # owning GUI loop; use a fresh process whose main thread owns Tk.
+            command = [sys.executable]
+            if not getattr(sys, "frozen", False):
+                command.append(str(Path(__file__).resolve().parents[3] / "run.py"))
+            command.append("--choose-workbook")
+            result = subprocess.run(
+                command,
+                check=True, capture_output=True, text=True, encoding="utf-8-sig",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            selected = result.stdout.strip()
+            return Path(selected) if selected else None
+
         if sys.platform == "darwin":
             script = '''
                 try
@@ -125,6 +140,7 @@ def native_workbook_dialog():
         root = tk.Tk()
         root.withdraw()
         selected = filedialog.askopenfilename(
+            parent=root,
             title="Chọn tệp Excel",
             filetypes=[("Tệp Excel", "*.xlsx *.xlsm"), ("Tất cả tệp", "*.*")],
         )
